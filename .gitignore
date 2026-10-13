@@ -1,0 +1,9 @@
+# user data / secrets
+data/
+calendars.txt
+tasks.txt
+__pycache__/
+*.pyc
+*.log
+.env
+*.ics
