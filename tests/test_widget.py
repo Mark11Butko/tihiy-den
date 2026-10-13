@@ -44,7 +44,14 @@ class WidgetTests(unittest.TestCase):
     def text(self):
         result={}
         for n,keys in enumerate(common.chunks(common.text_keys())):
-            values=(TEST_ROOT/'data'/f'text{n}.txt').read_text(encoding='utf-8').splitlines()
+            values=Path(common.data_chunk_path('text',n)).read_text(encoding='utf-8').splitlines()
+            result.update(zip(keys,values))
+        return result
+
+    def geometry(self):
+        result={}
+        for n,keys in enumerate(common.chunks(common.geo_keys())):
+            values=Path(common.data_chunk_path('geo',n)).read_text(encoding='utf-8').splitlines()
             result.update(zip(keys,values))
         return result
 
@@ -128,7 +135,7 @@ class WidgetTests(unittest.TestCase):
             cache['items']['coin:bitcoin'].update(price=price,s7=series)
             storage.write_json(engine.CACHE,cache);engine.render()
             for n in range(len(common.chunks(common.geo_keys()))):
-                raw=(TEST_ROOT/'data'/f'geo{n}.txt').read_text()
+                raw=Path(common.data_chunk_path('geo',n)).read_text()
                 self.assertNotIn('nan',raw.lower());self.assertNotIn('inf',raw.lower())
             self.assertIn(engine.money(price,'USD'),self.text()['ch.current'])
 
@@ -172,6 +179,34 @@ class WidgetTests(unittest.TestCase):
             def now(cls,tz=None):return cls(today.year,today.month,today.day,17)
         with patch.object(engine.dt,'datetime',FrozenDateTime):engine.render()
         self.assertEqual(self.text()['cp.ev0.n'],'Synthetic 18:00')
+
+    def test_signature_progress_and_focus(self):
+        today=dt.date.today()
+        for start in ('09:00','14:30'):gcal.add_local_event(today,start,'','Synthetic '+start)
+        class FrozenDateTime(dt.datetime):
+            @classmethod
+            def now(cls,tz=None):return cls(today.year,today.month,today.day,12)
+        with patch.object(engine.dt,'datetime',FrozenDateTime):engine.render()
+        geo=self.geometry()
+        self.assertIn('172.0',geo['day.progress'])
+        self.assertEqual(geo['hid.focus0'],'1');self.assertEqual(geo['hid.focus1'],'0')
+
+    def test_custom_accent_preserves_four_sizes_and_valid_color(self):
+        cfg=common.normalize_config({'accent':'#E8C88E'})
+        self.assertEqual(cfg['accent'],'#E8C88EFF')
+
+    def test_schema_changes_do_not_overwrite_old_skin_data(self):
+        old=common.data_chunk_path('text',0)
+        with patch.object(common,'text_keys',return_value=common.text_keys()+['new_field']):new=common.data_chunk_path('text',0)
+        self.assertNotEqual(old,new)
+        self.assertEqual(common.data_chunk_path('text',0),old)
+
+    def test_all_calendar_event_colors_survive_dense_month(self):
+        storage.write_json(engine.STATE,{'mode':'expanded','month':10,'year':2026})
+        data={'connected':True,'events':[],'tasks':[],'days':{i:['#8BD4E8FF','#E8C88EFF','#A9D6BDFF'] for i in range(1,32)}}
+        with patch.object(gcal,'view',return_value=data):engine.render()
+        dots=[value for key,value in self.geometry().items() if key.startswith('dot') and not value.startswith('Ellipse -50')]
+        self.assertEqual(len(dots),93)
 
     def test_time_parser_and_overnight_event(self):
         self.assertIsNone(engine._parse_clock('13pm'))
@@ -235,6 +270,9 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual({float(sec['fontsize']) for sec in parser.values() if sec.get('meter')=='String'},{10.5,12,18,36})
         self.assertNotIn('InputText',ini.read_text(encoding='utf-16'));self.assertNotIn('$UserInput$',ini.read_text(encoding='utf-16'))
         self.assertIn(str(TEST_ROOT/'data'),parser['Rainmeter']['onrefreshaction'])
+        self.assertEqual(parser['Ch_pill']['group'],'ChartPanel')
+        self.assertIn('Repeat CheckStep',parser['MotionTimer']['actionlist2'])
+        self.assertIn('Repeat PanelStep',parser['MotionTimer']['actionlist3'])
         self.assertTrue((TEST_ROOT/'skin'/'@Resources'/'motion.lua').exists())
         cfg=common.load_config();cfg['lang']='en';common.save_config(cfg)
         p=subprocess.run([sys.executable,str(SRC/'build_skin.py')],env=os.environ.copy(),capture_output=True,timeout=30)

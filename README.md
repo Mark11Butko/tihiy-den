@@ -6,7 +6,7 @@
 
 ![Предпросмотр с демонстрационными данными](docs/preview-v1.2.png)
 
-Версия 1.2: настройки в отдельном окне, списки без потери инструментов, график сохраняет календарь и задачи. [Проверки и ограничения](docs/VALIDATION.md).
+Версия 1.2: «линия дня» под часами, выделение ближайшего события, три палитры и свой цвет, настройки в отдельном окне, списки без потери инструментов. График сохраняет календарь и задачи. [Проверки и ограничения](docs/VALIDATION.md) · [Использованные рецепты Transitions.dev](docs/MOTION.md).
 
 ## Что умеет
 - Погода: сейчас, по часам, на 5 дней. **Город меняется кликом по названию** — вводите «Вена» или «Paris, US». Источник Open-Meteo, а если он не отвечает — автоматически met.no
@@ -39,7 +39,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 Адрес — это ключ доступа к календарю: **не публикуйте его**. Файл `calendars.txt` лежит только у вас на компьютере и в репозиторий не попадает (`.gitignore`).
 
 ## Настройка
-Значок ⚙ открывает окно настроек: язык, город, базовая валюта, масштаб 0,7–1,3, непрозрачность, акцентный цвет, формат часов и названия списков. Скин пересобирается автоматически. Минимум движения включён по умолчанию; его можно отключить для короткого перехода выбранного периода.
+Значок ⚙ открывает окно настроек: язык, город, базовая валюта, масштаб 0,7–1,3, непрозрачность, акцентный цвет, формат часов и названия списков. Палитры: «Лёд», «Шампань», «Шалфей» или свой цвет HEX. Скин пересобирается автоматически. Минимум движения включён по умолчанию; его можно отключить для коротких переходов периода, панели графика и галочки задачи. Под часами — прогресс суток; наведите на линию, чтобы увидеть процент.
 
 В списках котировок и событий используйте ‹ / ›; рядом с задачей › переключает задачи. Удаление инструмента из списка не удаляет исходные рыночные данные. Задачи — локальные, синхронизации с Google Tasks в этой версии нет.
 
@@ -66,7 +66,7 @@ A dark glass desktop widget for Windows built on [Rainmeter](https://www.rainmet
 
 ![Synthetic preview](docs/preview-v1.2.png)
 
-Version 1.2 adds native settings, paginated watchlists, and charts that keep the calendar and agenda visible. [Validation and limitations](docs/VALIDATION.md).
+Version 1.2 adds day progress, upcoming event emphasis, Ice/Champagne/Sage palettes, native settings, paginated watchlists, and charts that keep the calendar and agenda visible. [Validation and limitations](docs/VALIDATION.md) · [Transitions.dev recipes used](docs/MOTION.md).
 
 ### Features
 - Weather: now, hourly, 5-day forecast. **Change the city by clicking its name** — type "Vienna" or "Paris, US" and wait for the lookup. Open-Meteo, with automatic fallback to met.no

@@ -27,7 +27,7 @@ for _flag, _env in (('--data-dir','TD_DATA_DIR'),('--user-dir','TD_USER_DIR'),('
 import google as gcal
 import markets
 from i18n import LANG, tr
-from td_common import CFG, COLORS, DATA, RAINMETER, NC, NE, NF, NT, chunks, geo_keys, hex_rgba, load_config, save_config, text_keys
+from td_common import CFG, COLORS, DATA, RAINMETER, NC, NE, NF, NT, NDOTS, chunks, geo_keys, hex_rgba, load_config, save_config, text_keys, data_chunk_path
 from td_layout import CW, RH, S, SPARK_H, SPARK_W, TILE_SPARK_H, TILE_SPARK_W, CHART_W, CHART_H
 from td_storage import FileLock, write_json, atomic_write
 
@@ -491,6 +491,9 @@ def _render():
     # --- шапка
     T["date1"] = WEEKDAYS[today.weekday()]
     T["date2"] = tr("date_full").format(d=today.day, m=MONTHS_GEN[today.month - 1], y=today.year)
+    day_progress = (now.hour * 60 + now.minute) / 1440
+    G['day.progress'] = 'Rectangle 0,0,%s,%s,%s | Fill Color %s | StrokeWidth 0' % (max(.1, S(344 * day_progress)), S(2), S(1), rgba('accent'))
+    T['day.progressLabel'] = tr('day_progress') % round(day_progress * 100)
 
     # --- погода
     w = cache.get("weather")
@@ -525,6 +528,7 @@ def _render():
         T["w.temp"], T["w.wind"], T["w.feels"] = "—", "—", tr("no_weather")
 
     probability = w.get('precip') if w else None
+    T['w.range'] = T['w.lo'] + ' / ' + T['w.hi'] if w else '— / —'
     T['w.precip'] = tr('precip') % round(probability) if probability is not None else tr('precip_unknown')
     T['w.summary'] = ' · '.join([T['w.temp'], T['w.loc'], T['w.wind']])
     if w and time.time() - w.get('t', 0) > cfg['weather_every'] * 2:
@@ -579,11 +583,11 @@ def _render():
         cx, cy = CW * c + CW / 2, RH * r + RH - 4
         cs = colors[:3]
         for j, colr in enumerate(cs):
-            if n < 60:
+            if n < NDOTS:
                 dx = (j - (len(cs) - 1) / 2) * 6
                 G[f"dot{n}"] = "Ellipse %s,%s,%s | Fill Color %s | StrokeWidth 0" % (S(cx + dx), S(cy), S(1.8), hex_rgba(colr))
                 n += 1
-    for j in range(n, 60):
+    for j in range(n, NDOTS):
         G[f"dot{j}"] = NONE_SHAPE
     online = cache.get("online", True)
     if not online:
@@ -619,9 +623,18 @@ def _render():
     T["fx.title"] = toast["msg"] if toast.get("sec") == "fx" else (tr("in_fx") if inp == "fx" else tr("ui_currencies"))
     T["cr.title"] = toast["msg"] if toast.get("sec") == "coin" else (tr("in_coin") if inp == "coin" else tr("ui_crypto"))
     evmap = []
+    focus_found = False
     for i in range(NE):
+        G[f'hid.focus{i}'] = '1'
         if i < len(events) and not typing:
             e = events[i]
+            try:
+                start = dt.datetime.fromisoformat(e['start']) if e.get('start') else None
+                end = dt.datetime.fromisoformat(e['end']) if e.get('end') else start
+                if not focus_found and start and (start >= now or end > now):
+                    G[f'hid.focus{i}'] = '0'
+                    focus_found = True
+            except (ValueError, TypeError): pass
             if i == NE - 1 and len(events) > NE:
                 T[f"ev{i}.t"], T[f"ev{i}.n"] = "", tr("more_events") % (len(events) - NE + 1)
                 G[f"col.ev{i}"] = "0,0,0,0"
@@ -701,7 +714,7 @@ def _render():
     d = store.get(markets.item_key(cit)) if cit else None
     per = state.get("period", "7d")
     for i, p in enumerate(("24h", "7d", "30d")):
-        G[f"pc{i}"] = rgba("text") if p == per else rgba("textDim")
+        G[f"pc{i}"] = rgba("accent") if p == per else rgba("textDim")
     G["ch.l"] = "0,0 | LineTo 0,0"
     G["ch.a"] = "0,0 | LineTo 0,0 | ClosePath 1"
     G["ch.dot"], G["ch.cury"] = NONE_SHAPE, "0"
@@ -709,7 +722,7 @@ def _render():
     cprice = (lambda v: fmt_rate(v) if cit["k"] == "fx" else money(v, d.get("cur", "USD"))) if (cit and d) else None
     T["ch.title"] = "%s · %s" % (item_label(cit, base), cprice(d["price"])) if cprice else (item_label(cit, base) if cit else "")
     series = item_series(d, per)
-    G['ch.pill'] = 'Rectangle 0,0,%s,%s,%s | Fill Color %s | StrokeWidth 1 | Stroke Color %s' % (S(56), S(24), S(8), rgba('surface'), rgba('accent'))
+    G['ch.pill'] = 'Rectangle 0,0,%s,%s,%s | Fill Color %s | StrokeWidth 1 | Stroke Color %s' % (S(56), S(24), S(8), rgba('accent',.12), rgba('accent',.55))
     G['ch.pillx'] = str(S(('24h','7d','30d').index(per) * 64) if per in ('24h','7d','30d') else 0)
     T['ch.status'] = tr('no_data') if not series else (tr('stale') if d and time.time() - d.get('t', 0) > markets.EVERY.get(cit['k'], 300) * 2 else '')
     if not online: T['ch.status'] = tr('offline')
@@ -800,6 +813,8 @@ def _render():
     G["hid.kempty"] = H1(not (compact and not upcoming))
     G["hid.kgo"] = "1"
     ag_off = compact
+    if compact:
+        for i in range(NE): G[f'hid.focus{i}'] = '1'
     G["hid.btn"] = H1(ag_off or typing)
     G["hid.inag"] = H1(ag_off or not typing)
     G["hid.fxadd"] = H1(compact or chart or inp in ("add0", "add1"))
@@ -826,7 +841,7 @@ def _render():
 def write_chunks(prefix, keys, values):
     for n, ks in enumerate(chunks(keys)):
         lines = [str(values.get(k, "")).replace("\r", "").replace("\n", " ") for k in ks]
-        path = os.path.join(DATA, "%s%d.txt" % (prefix, n))
+        path = data_chunk_path(prefix, n)
         atomic_write(path, "\n".join(lines) + "\n")
 
 

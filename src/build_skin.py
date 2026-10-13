@@ -4,7 +4,7 @@ import os
 
 from build_icons import build as build_icons
 from i18n import tr
-from td_common import CFG, COLORS, DATA, USER_ROOT, NC, NE, NF, NT, PYTHONW, SKIN_DIR, SKIN_NAME, chunks, geo_keys, hex_rgba, safe, screen_size, text_keys
+from td_common import CFG, COLORS, DATA, USER_ROOT, NC, NE, NF, NT, NDOTS, PYTHONW, SKIN_DIR, SKIN_NAME, chunks, geo_keys, hex_rgba, safe, screen_size, text_keys, data_chunk_path
 from td_layout import (AG_H, AG_Y, CAL_GRID_Y, CAL_WD_Y, CAL_Y, CP_EV_H, CP_EV_Y, CP_FX_H, CP_FX_Y, CP_TOTAL_H, CP_WX_H, CP_WX_Y, CR_H, CR_Y, CW, DY_H,
                        DY_Y, FX_H, FX_Y, HR_H, HR_Y, RH, S, SCALE, TOTAL_H, W, WX_H, WX_Y, CH_Y, CH_H)
 
@@ -23,6 +23,7 @@ def sec(name, **opts):
     add("", f"[{name}]")
     if "DynamicVariables" not in opts and any(isinstance(v, str) and ("[G_" in v or "[T_" in v) for v in opts.values()):
         opts["DynamicVariables"] = 1
+    if name.startswith('Ch_'): opts['Group'] = 'ChartPanel'
     for k, v in opts.items():
         add(f"{k}={v}")
 
@@ -112,7 +113,7 @@ add('', '[Metadata]', 'Name=Quiet Day / Тихий день', 'Author=Mark Butko
 add('', '[Variables]', f'D={DATA}\\', f'Scale={SCALE}', f'MotionEnabled={0 if CFG.get("reduced_motion", True) else 1}')
 def parents(prefix, keys, tag):
     for n, ks in enumerate(chunks(keys)):
-        sec(f'P_{tag}{n}', Measure='WebParser', URL=f'file://{DATA}\\{prefix}{n}.txt', CodePage=65001,
+        sec(f'P_{tag}{n}', Measure='WebParser', URL='file://' + data_chunk_path(prefix, n), CodePage=65001,
             RegExp='(?siU)' + '(.*)\\n' * len(ks), UpdateRate=1)
         for i, k in enumerate(ks):
             options = {}
@@ -128,9 +129,11 @@ def parents(prefix, keys, tag):
 parents('text', text_keys(), 't'); parents('geo', geo_keys(), 'g')
 sec('mClock', Measure='Time', Format='%H:%M' if CFG.get('clock24', True) else '%I:%M %p')
 sec('Motion', Measure='Script', ScriptFile='#@#motion.lua')
-sec('MotionTimer', Measure='Plugin', Plugin='ActionTimer', ActionList1='Repeat Step,16,16', Step='[!CommandMeasure Motion "Advance()"]')
+sec('MotionTimer', Measure='Plugin', Plugin='ActionTimer', ActionList1='Repeat Step,16,16', Step='[!CommandMeasure Motion "Advance()"]', ActionList2='Repeat CheckStep,16,22', CheckStep='[!CommandMeasure Motion "CheckAdvance()"]', ActionList3='Repeat PanelStep,16,16', PanelStep='[!CommandMeasure Motion "PanelAdvance()"]')
 EX, CL, AGF, LS, CH, K = 'hid.ex', 'hid.cal', 'hid.ag', 'hid.lists', 'hid.ch', 'hid.k'
 def button(name,x,y,w,label,action,flag=None,tip=None):
+    if name in ('Cfg','Mode_exp','Mode_cmp','Add_event','Add_task','Cal_sync','Ch_close'):
+        rect(name+'_surface',x,y,w,24,8,RGBA('surface'),flag,RGBA('stroke'))
     icon_name = {'⚙':'u_settings','↻':'u_sync','✓':'u_check'}.get(label)
     if icon_name: img(name+'_icon',x+(w-16)/2,y+4,16,16,file=icon_name,flag=flag)
     else: txt(name+'_text',x,y,w,24,static=label,px=14,color=RGBA('accent'),align='center',flag=flag)
@@ -146,16 +149,19 @@ txt('Date2',144,64,216,16,key='date2',px=14,color=RGBA('textDim'),align='right')
 button('Mode_exp',336,16,24,'−',act('act','mode'),EX,tr('tip_mode'))
 button('Mode_cmp',336,16,24,'+',act('act','mode'),K,tr('tip_mode'))
 button('Cfg',304,16,24,'⚙',act('act','cfg'),tip=tr('settings'))
+rect('Day_track',16,80,344,2,1,RGBA('surface'))
+sec('Day_progress',Meter='Shape',X=S(16),Y=S(80),Shape='[G_day_progress]',ToolTipText='[T_day_progressLabel]')
 # Weather: no decorative subcards, no shadows/blur/gradients.
-txt('Wx_loc',16,88,216,16,key='w.loc',px=14,color=RGBA('textDim'),flag=EX)
-hit('Wx_loc_hit',16,88,216,16,input_action('city'),EX,tr('tip_city'))
-img('Wx_icon',16,104,32,32,gkey='ic.cur',flag=EX)
-txt('Wx_temp',56,104,80,32,key='w.temp',px=24,bold=True,flag=EX)
-txt('Wx_feels',144,104,216,16,key='w.feels',px=14,flag=EX)
-txt('Wx_lo',144,120,48,16,key='w.lo',px=14,color=RGBA('textDim'),flag=EX)
-txt('Wx_hi',200,120,48,16,key='w.hi',px=14,color=RGBA('textDim'),flag=EX)
-txt('Wx_wind',16,144,144,16,key='w.wind',px=14,color=RGBA('textDim'),flag=EX)
-txt('Wx_precip',168,144,192,16,key='w.precip',px=14,color=RGBA('textDim'),align='right',flag=EX)
+rect('Weather_surface',16,88,344,72,16,RGBA('surface2'),EX,RGBA('stroke',.5))
+txt('Wx_loc',24,96,160,16,key='w.loc',px=14,color=RGBA('textDim'),flag=EX)
+hit('Wx_loc_hit',24,92,160,24,input_action('city'),EX,tr('tip_city'))
+img('Wx_icon',24,120,32,32,gkey='ic.cur',flag=EX)
+txt('Wx_temp',64,112,80,40,key='w.temp',px=24,bold=True,flag=EX)
+txt('Wx_feels',144,120,208,16,key='w.feels',px=14,flag=EX)
+txt('Wx_range',144,136,112,16,key='w.range',px=14,color=RGBA('textDim'),flag=EX)
+img('Wx_wind_icon',192,96,16,16,file='u_wind',flag=EX)
+txt('Wx_wind',216,96,136,16,key='w.wind',px=14,color=RGBA('textDim'),align='right',flag=EX)
+txt('Wx_precip',264,136,88,16,key='w.precip',px=14,color=RGBA('textDim'),align='right',flag=EX)
 for i in range(6):
     x=16+i*(344/6)
     txt(f'Hr{i}_l',x,168,344/6,16,key=f'h{i}.l',px=14,color=RGBA('textDim'),align='center',flag=EX)
@@ -163,8 +169,10 @@ for i in range(6):
 for i in range(5):
     x=16+i*(344/5)
     txt(f'Dy{i}_n',x,208,344/5,16,key=f'd{i}.n',px=14,color=RGBA('textDim'),align='center',flag=EX)
-    txt(f'Dy{i}_h',x,232,344/10,16,key=f'd{i}.h',px=14,align='center',flag=EX)
-    txt(f'Dy{i}_l',x+344/10,232,344/10,16,key=f'd{i}.l',px=14,color=RGBA('textDim'),align='center',flag=EX)
+    txt(f'Dy{i}_l',x,232,344/10,16,key=f'd{i}.l',px=14,color=RGBA('textDim'),align='center',flag=EX)
+    txt(f'Dy{i}_h',x+344/10,232,344/10,16,key=f'd{i}.h',px=14,align='center',flag=EX)
+    txt(f'Dy{i}_slash',x+344/10-3,232,6,16,static='/',px=14,color=RGBA('textDim'),align='center',flag=EX)
+    if i: line(f'Dy{i}_divider',x,212,x,248,RGBA('stroke',.5),EX)
 # Month: 42 cells include every possible six-week month.
 txt('Cal_title',16,CAL_Y,248,24,key='cal.title',px=16,bold=True,flag=CL)
 button('Cal_prev',272,CAL_Y,24,'‹',act('act','month',-1),CL,tr('tip_prev'))
@@ -173,7 +181,7 @@ button('Cal_sync',336,CAL_Y,24,'↻',act('act','gclick'),CL,tr('tip_sync'))
 hit('Cal_today',16,CAL_Y,248,24,act('act','today'),CL,tr('tip_today'))
 for c,lab in enumerate(tr('wd_short')):txt(f'WD{c}',16+CW*c,CAL_WD_Y,CW,16,static=lab,px=14,color=RGBA('textDim'),align='center',flag=CL)
 sec('CalShapes',Meter='Shape',X=S(16),Y=S(CAL_GRID_Y),Shape='[G_sel]',Shape2='[G_today]',
-    **{f'Shape{3+i}':f'[G_dot{i}]' for i in range(60)},**hid(CL))
+    **{f'Shape{3+i}':f'[G_dot{i}]' for i in range(NDOTS)},**hid(CL))
 for i in range(42):
     r,c=divmod(i,7)
     txt(f'C{i}',16+CW*c,CAL_GRID_Y+RH*r,CW,RH,key=f'c{i}',px=14,colkey=f'cc{i}',align='center',flag=CL)
@@ -187,6 +195,7 @@ button('Events_next',328,AG_Y,32,'›',act('act','page','event_page:1'),AGF,tr('
 txt('Ag_empty',16,480,344,24,key='ag.empty',px=14,color=RGBA('textDim'),flag=AGF)
 for i in range(NE):
     y=480+i*24
+    rect(f'Ev{i}_focus',16,y,344,24,8,RGBA('surface'),f'hid.focus{i}')
     sec(f'Ev{i}_dot',Meter='Shape',X=S(20),Y=S(y+12),Shape=f'Ellipse 0,0,{S(3)} | Fill Color [G_col_ev{i}] | StrokeWidth 0',**hid(AGF))
     txt(f'Ev{i}_t',32,y,72,24,key=f'ev{i}.t',px=14,flag=AGF)
     txt(f'Ev{i}_n',112,y,216,24,key=f'ev{i}.n',px=16,flag=AGF)
@@ -218,8 +227,10 @@ for L,(key,y0,tkey) in enumerate([('Fx',FX_Y,'fx.title'),('Cr',CR_Y,'cr.title')]
         price_key = f'T_fx{i}_r' if L == 0 else f'T_cr{i}_p'
         hit(f'{key}{i}_hit',16,y,344,24,act('act','chart',f'{L}:{i}'),flag,f'[{price_key}] · '+tr('tip_rm'),rclick=act('act','rm',f'{L}:{i}'))
 # Chart replaces watchlists only. Active tab has one sliding pill.
+rect('Ch_surface',16,CH_Y,344,168,16,RGBA('surface2'),CH,RGBA('stroke',.5))
 txt('Ch_title',16,CH_Y,304,24,key='ch.title',px=16,bold=True,flag=CH)
 button('Ch_close',336,CH_Y,24,'×',act('act','chartclose'),CH,tr('tip_close'))
+rect('Ch_tabs_track',16,CH_Y+32,184,24,8,RGBA('surface2'),CH)
 sec('Ch_pill',Meter='Shape',X=f'({S(16)}+[G_ch_pillx])',Y=S(CH_Y+32),Shape='[G_ch_pill]',**hid(CH))
 for i,lab in enumerate(tr('periods')):
     x=16+64*i
@@ -245,6 +256,9 @@ for i in range(3):
     txt(f'Ct{i}_symbol',x,208,104,16,key=f'cp.f{i}.p',px=14,color=RGBA('textDim'),flag=K)
     txt(f'Ct{i}_price',x,232,104,16,key=f'cp.f{i}.r',px=16,bold=True,flag=K)
 os.makedirs(SKIN_DIR,exist_ok=True)
+# Prepare this schema before exposing its INI. No network or live-calendar requests.
+import engine
+engine.render()
 path=os.path.join(SKIN_DIR,f'{SKIN_NAME}.ini')
 with open(path,'w',encoding='utf-16',newline='') as f:f.write('\r\n'.join(out)+'\r\n')
 build_icons()

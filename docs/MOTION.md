@@ -13,17 +13,23 @@
 Нативная реализация: `src/motion.lua`, Script measure + ActionTimer.
 Продолжительность — 256 ms, выход по кубической кривой. Новое нажатие прерывает
 предыдущий переход и начинает его с текущего положения. Первый показ — без движения.
-Минимум движения включён по умолчанию; цифры, положение всего окна и графики не анимируются.
+Минимум движения включён по умолчанию; цифры и положение всего окна не анимируются.
 Нет размытия, вращения, частиц, постоянно работающих таймеров или новых зависимостей.
 
 **Tooltip** — полное название длинной задачи/события и назначение кнопок доступны
 через нативные подсказки Rainmeter. Заимствован принцип раскрытия подробностей при наведении;
-CSS-рецепт не копировался. **Checkbox** — состояние имеет заливку и контрастную галочку,
-поэтому распознаётся без движения и без зависимости только от цвета.
+CSS-рецепт не копировался. **Checkbox check** — короткая отрисовка галочки за 352 ms,
+только после подтверждённого сохранения задачи. Состояние имеет заливку и контрастную
+галочку, поэтому распознаётся без движения и без зависимости только от цвета.
+Рецепт: [25-checkbox-check.md](https://github.com/Jakubantalik/transitions.dev/blob/main/skills/transitions-dev/25-checkbox-check.md).
+
+**Panel reveal** — график появляется со смещением 8 px за 256 ms.
+Закрытие сразу останавливает переход и возвращает исходные координаты.
+Высота всего виджета постоянна. Blur, масштабирование и вращение из веб-примеров
+не перенесены. Рецепт: [07-panel-reveal.md](https://github.com/Jakubantalik/transitions.dev/blob/main/skills/transitions-dev/07-panel-reveal.md).
 
 ## Что оставлено для будущего веб-интерфейса
 
-- [Panel reveal](https://github.com/Jakubantalik/transitions.dev/blob/main/skills/transitions-dev/07-panel-reveal.md): раскрытие деталей, с отключённым blur и небольшим смещением.
 - [Skeleton reveal](https://github.com/Jakubantalik/transitions.dev/blob/main/skills/transitions-dev/14-skeleton-reveal.md): смена пустого состояния на загруженное без изменения размеров.
 - [Accordion](https://github.com/Jakubantalik/transitions.dev/blob/main/skills/transitions-dev/21-accordion.md): группы дополнительных настроек.
 
@@ -33,6 +39,6 @@ CSS-рецепт не копировался. **Checkbox** — состояни�
 
 ## English
 
-The Rainmeter tab interaction is a native adaptation inspired by Transitions.dev's
-free tabs-sliding recipe. Only the actually used behavior is shipped. No CSS library
+The Rainmeter tabs, panel reveal and checkbox stroke are native adaptations inspired
+by Transitions.dev's free recipes. Only the actually used behavior is shipped. No CSS library
 or Pro content is redistributed. Motion is short, on demand, and disabled by default.

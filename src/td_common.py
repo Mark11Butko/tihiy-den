@@ -4,6 +4,7 @@ import os
 import sys
 import math
 import re
+import hashlib
 from td_storage import write_json
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -201,6 +202,7 @@ NF = 2  # visible quotes per page
 NC = 2
 NE = 2  # visible events per page
 NT = 1  # visible tasks per page
+NDOTS = 93  # all 31 days can have three calendar colors
 
 
 def text_keys():
@@ -214,7 +216,7 @@ def text_keys():
     for i in range(NE):
         k += [f"ev{i}.t", f"ev{i}.n"]
     k += [f"tk{i}" for i in range(NT)]
-    k += ["status", "w.precip", "w.summary", "fx.page", "cr.page", "ag.page", "tk.page", "cal.state", "ch.status"]
+    k += ["status", "w.precip", "w.summary", "w.range", "day.progressLabel", "fx.page", "cr.page", "ag.page", "tk.page", "cal.state", "ch.status"]
     for i in range(NF):
         k += [f"fx{i}.p", f"fx{i}.r", f"fx{i}.c"]
     for i in range(NC):
@@ -236,14 +238,14 @@ def geo_keys():
     k += [f"col.ev{i}" for i in range(NE)] + [f"cpcol.ev{i}" for i in range(2)]
     k += [f"tkcol{i}" for i in range(NT)]
     k += [f"cc{i}" for i in range(42)]
-    k += [f"dot{i}" for i in range(60)]
+    k += [f"dot{i}" for i in range(NDOTS)]
     k += ["sel", "today"]
     for i in range(NT):
         k += [f"chk{i}a", f"chk{i}b"]
     k += ["ic.cur"] + [f"ic.h{i}" for i in range(6)] + [f"ic.d{i}" for i in range(5)]
     k += [f"fl.fx{i}" for i in range(NF)] + [f"lg.c{i}" for i in range(NC)] + [f"fl.t{i}" for i in range(3)]
     k += ["hid.ex", "hid.cal", "hid.ag", "hid.go", "hid.lists", "hid.ch", "hid.k", "hid.kev", "hid.kempty", "hid.kgo", "hid.sync"]
-    k += ["stale", "hid.fx0", "hid.fx1", "hid.cr0", "hid.cr1", "ch.pill", "ch.pillx"] + [f"hid.evx{i}" for i in range(NE)] + [f"hid.tkx{i}" for i in range(NT)]
+    k += ["stale", "day.progress", "hid.focus0", "hid.focus1", "hid.fx0", "hid.fx1", "hid.cr0", "hid.cr1", "ch.pill", "ch.pillx"] + [f"hid.evx{i}" for i in range(NE)] + [f"hid.tkx{i}" for i in range(NT)]
     k += ["hid.btn", "hid.fxadd", "hid.inag", "hid.infx", "hid.incr", "hid.tkempty", "hid.inwx"]
     return k
 
@@ -254,3 +256,10 @@ def safe(key):
 
 def chunks(keys):
     return [keys[i:i + CHUNK] for i in range(0, len(keys), CHUNK)]
+
+
+def data_chunk_path(prefix, index):
+    """A schema change must never make an old skin read a different field in the same slot."""
+    keys = text_keys() if prefix == 'text' else geo_keys()
+    schema = hashlib.sha256('\n'.join(keys).encode('utf-8')).hexdigest()[:12]
+    return os.path.join(DATA, f'{prefix}_{schema}_{index}.txt')

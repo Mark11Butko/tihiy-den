@@ -14,7 +14,7 @@ from i18n import tr
 from td_common import DATA, ROOT, RAINMETER, load_config, normalize_config, save_config
 from td_storage import FileLock, atomic_write, write_json
 
-BG, FG, DIM, ACCENT = '#111820', '#F3F6FA', '#B4BEC9', '#8BD4E8'
+BG, FG, DIM, ACCENT = '#111820', '#F3F6FA', '#B4BEC9', load_config()['accent'][:7]
 
 
 def window(title):
@@ -125,6 +125,17 @@ def settings_window():
     field(appearance,'scale','scale',cfg['scale'])
     field(appearance,'opacity','opacity',cfg['opacity'])
     field(appearance,'accent','accent_label',cfg['accent'])
+    label(appearance,tr('palette')).pack(anchor='w',pady=(8,4))
+    palettes={tr('palette_ice'):'#8BD4E8FF',tr('palette_champagne'):'#E8C88EFF',tr('palette_sage'):'#A9D6BDFF'}
+    palette_value=tk.StringVar(value=next((name for name,color in palettes.items() if color==cfg['accent']),tr('palette_custom')))
+    palette_picker=ttk.Combobox(appearance,textvariable=palette_value,values=[*palettes,tr('palette_custom')],state='readonly')
+    palette_picker.pack(fill='x')
+    def select_palette(event):
+        color=palettes.get(palette_value.get())
+        if color:
+            fields['accent'].set(color)
+            ttk.Style(app).map('TNotebook.Tab',background=[('selected',color[:7]),('active','#344654')])
+    palette_picker.bind('<<ComboboxSelected>>',select_palette)
     fields['reduced_motion']=tk.BooleanVar(value=cfg['reduced_motion'])
     ttk.Checkbutton(appearance,text=tr('motion_label'),variable=fields['reduced_motion']).pack(anchor='w',pady=16)
     field(lists,'title1','title1',cfg['titles'][0] or '')
