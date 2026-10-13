@@ -8,6 +8,7 @@ import calendar as pycal
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -16,17 +17,17 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 import google as gcal
+import markets
 from i18n import LANG, tr
-from td_common import CFG, COLORS, DATA, NC, NE, NF, NT, chunks, geo_keys, hex_rgba, load_config, save_config, text_keys
+from td_common import CFG, COLORS, DATA, RAINMETER, NC, NE, NF, NT, chunks, geo_keys, hex_rgba, load_config, save_config, text_keys
 from td_layout import CW, RH, S, SPARK_H, SPARK_W, TILE_SPARK_H, TILE_SPARK_W
 
 CACHE = os.path.join(DATA, "cache.json")
 STATE = os.path.join(DATA, "state.json")
 DEMO = os.environ.get("TD_DEMO") == "1" or bool(CFG.get("demo"))
 
-DEFAULT_STATE = {"mode": "expanded", "chartOpen": False, "coin": 0, "period": "7d", "month": None, "year": None, "selected": None}
-CBR_CODES = {"USD": "R01235", "EUR": "R01239", "PLN": "R01565", "CZK": "R01760", "UAH": "R01720", "GBP": "R01035",
-             "CHF": "R01775", "JPY": "R01820", "CNY": "R01375", "TRY": "R01700J", "KZT": "R01335", "BYN": "R01090B"}
+DEFAULT_STATE = {"mode": "expanded", "chartOpen": False, "chart": "1:0", "period": "7d", "month": None, "year": None, "selected": None}
+CBR_CODES = markets.CBR_CODES
 WEEKDAYS, WD_SHORT, MONTHS, MONTHS_GEN, COMPASS = tr("weekdays"), tr("wd_short"), tr("months"), tr("months_gen"), tr("compass")
 CONFIG = os.path.join(DATA, "config.json")
 NBSP = " "
@@ -41,6 +42,36 @@ def load_json(path, default):
             return json.load(f)
     except Exception:
         return json.loads(json.dumps(default))
+
+
+LOCK = os.path.join(DATA, "state.lock")
+
+
+class state_lock:
+    """Простой файловый замок: клики запускают отдельные процессы engine.py, они не должны затирать state.json друг у друга."""
+
+    def __enter__(self):
+        t0 = time.time()
+        while True:
+            try:
+                self.fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                return self
+            except FileExistsError:
+                if time.time() - t0 > 5:  # замок завис (процесс убит) — снимаем
+                    try:
+                        os.remove(LOCK)
+                    except OSError:
+                        pass
+                time.sleep(0.03)
+            except OSError:
+                time.sleep(0.03)
+
+    def __exit__(self, *a):
+        try:
+            os.close(self.fd)
+            os.remove(LOCK)
+        except OSError:
+            pass
 
 
 def save_json(path, obj):
@@ -76,7 +107,7 @@ def weather_icon(code):
     return "cloud"
 
 
-def fetch_weather(cfg):
+def fetch_weather_openmeteo(cfg):
     q = {
         "latitude": cfg["lat"], "longitude": cfg["lon"], "timezone": "auto", "forecast_days": 6, "wind_speed_unit": "ms",
         "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,relative_humidity_2m",
@@ -97,80 +128,73 @@ def fetch_weather(cfg):
             "hourly": hourly, "daily": daily}
 
 
-def fetch_fx(cfg):
-    if cfg.get("fx_base", "RUB") != "RUB":
-        return fetch_fx_ecb(cfg)
-    return fetch_fx_cbr(cfg)
+def metno_icon(code):
+    c = code.split("_")[0]
+    for key, icon in (("thunder", "storm"), ("snow", "snow"), ("sleet", "snow"), ("rain", "rain"), ("shower", "rain"), ("fog", "fog"),
+                      ("partlycloudy", "partly"), ("fair", "partly"), ("cloudy", "cloud"), ("clearsky", "clear")):
+        if key in c:
+            return icon
+    return "cloud"
 
 
-def fetch_fx_ecb(cfg):
-    """Курсы ЕЦБ через Frankfurter (без ключа): сколько базовой валюты стоит 1 единица котируемой."""
-    base = cfg["fx_base"]
-    end = dt.date.today()
-    start = end - dt.timedelta(days=25)
-    out = {}
-    for sym in cfg["fx"]:
-        if sym == base:
-            continue
-        j = json.loads(get("https://api.frankfurter.dev/v1/%s..%s?base=%s&symbols=%s" % (start, end, sym, base)))
-        rates = j["rates"]
-        vals = [rates[d][base] for d in sorted(rates)]
-        if len(vals) < 2:
-            raise ValueError("not enough ECB data for " + sym)
-        out[sym] = {"rate": vals[-1], "chg": (vals[-1] / vals[-2] - 1) * 100, "s7": vals[-7:]}
-    out["t"] = time.time()
-    return out
+def fetch_weather_metno(cfg):
+    """Запасной источник: Норвежский метеоинститут (api.met.no), тоже без ключа."""
+    from zoneinfo import ZoneInfo
+    url = "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=%.4f&lon=%.4f" % (cfg["lat"], cfg["lon"])
+    req = urllib.request.Request(url, headers={"User-Agent": "TihiyDen/1.1 github.com/Mark11Butko/tihiy-den"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        ts = json.loads(r.read())["properties"]["timeseries"]
+    try:
+        tz = ZoneInfo(cfg["tz"]) if cfg.get("tz") else None
+    except Exception:
+        tz = None
+    rows = []
+    for e in ts:
+        t = dt.datetime.fromisoformat(e["time"].replace("Z", "+00:00")).astimezone(tz)
+        d = e["data"]
+        sym = ((d.get("next_1_hours") or d.get("next_6_hours") or d.get("next_12_hours") or {}).get("summary") or {}).get("symbol_code", "cloudy")
+        rows.append((t, d["instant"]["details"], metno_icon(sym)))
+    now = rows[0]
+    cur = now[1]
+    hourly = [{"time": r[0].strftime("%Y-%m-%dT%H:%M"), "temp": r[1]["air_temperature"], "icon": r[2]} for r in rows[1:7]]
+    days = {}
+    for t, det, icon in rows:
+        days.setdefault(t.date(), []).append((t, det["air_temperature"], icon))
+    daily = []
+    for day in sorted(days)[:5]:
+        vals = days[day]
+        mid = min(vals, key=lambda v: abs(v[0].hour - 13))
+        daily.append({"date": day.isoformat(), "min": min(v[1] for v in vals), "max": max(v[1] for v in vals), "icon": mid[2]})
+    wind = cur.get("wind_speed", 0)
+    return {"t": time.time(), "temp": cur["air_temperature"], "feels": cur["air_temperature"], "icon": now[2], "wind": wind,
+            "dir": cur.get("wind_from_direction"), "hum": cur.get("relative_humidity"), "hourly": hourly, "daily": daily, "src": "met.no"}
 
 
-def fetch_fx_cbr(cfg):
-    end = dt.date.today() + dt.timedelta(days=1)
-    start = end - dt.timedelta(days=24)
-    out = {}
-    for sym in cfg["fx"]:
-        url = ("https://www.cbr.ru/scripts/XML_dynamic.asp?date_req1=%s&date_req2=%s&VAL_NM_RQ=%s"
-               % (start.strftime("%d/%m/%Y"), end.strftime("%d/%m/%Y"), CBR_CODES[sym]))
-        root = ET.fromstring(get(url))
-        vals = []
-        for rec in root.findall("Record"):
-            nominal = float(rec.find("Nominal").text.replace(",", "."))
-            vals.append(float(rec.find("Value").text.replace(",", ".")) / nominal)
-        if len(vals) < 2:
-            raise ValueError("not enough CBR data for " + sym)
-        out[sym] = {"rate": vals[-1], "chg": (vals[-1] / vals[-2] - 1) * 100, "s7": vals[-7:]}
-    out["t"] = time.time()
-    return out
-
-
-def resample(vals, n):
-    if len(vals) <= n:
-        return list(vals)
-    step = (len(vals) - 1) / (n - 1)
-    return [vals[int(round(i * step))] for i in range(n)]
-
-
-def fetch_crypto(cfg, old):
-    ids = ",".join(c[0] for c in cfg["coins"])
-    url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=%s&sparkline=true&price_change_percentage=24h" % ids
-    data = {d["id"]: d for d in json.loads(get(url))}
-    out = {"t": time.time(), "coins": {}, "t30": (old or {}).get("t30", 0)}
-    for cid, sym in cfg["coins"]:
-        d = data[cid]
-        sp = d["sparkline_in_7d"]["price"]
-        prev = (old or {}).get("coins", {}).get(cid, {})
-        out["coins"][cid] = {"sym": sym, "price": d["current_price"], "chg": d.get("price_change_percentage_24h") or 0.0,
-                             "s24": sp[-24:], "s7": resample(sp, 56), "s30": prev.get("s30")}
-    return out
-
-
-def fetch_series30(cfg, crypto):
-    for cid, _ in cfg["coins"]:
+def fetch_weather(cfg):
+    """Open-Meteo, а если он не отвечает — met.no: виджет не остаётся без погоды."""
+    try:
+        w = fetch_weather_openmeteo(cfg)
+        w["src"] = "open-meteo"
+        return w
+    except Exception as first:
         try:
-            j = json.loads(get("https://api.coingecko.com/api/v3/coins/%s/market_chart?vs_currency=usd&days=30" % cid))
-            crypto["coins"][cid]["s30"] = resample([p[1] for p in j["prices"]], 60)
+            return fetch_weather_metno(cfg)
         except Exception:
-            pass
-        time.sleep(1.5)
-    crypto["t30"] = time.time()
+            raise first
+
+
+def geocode(query, lang):
+    """Город по названию (Open-Meteo Geocoding): 'Вена', 'Paris, US'. Возвращает dict или None."""
+    name, _, country = query.partition(",")
+    j = json.loads(get("https://geocoding-api.open-meteo.com/v1/search?count=10&language=%s&name=%s" % (lang, urllib.parse.quote(name.strip()))))
+    res = j.get("results") or []
+    c = country.strip().lower()
+    if c:
+        res = [r for r in res if c in (r.get("country_code", "").lower(), r.get("country", "").lower(), (r.get("admin1") or "").lower())] or res
+    if not res:
+        return None
+    r = res[0]
+    return {"label": r["name"], "lat": r["latitude"], "lon": r["longitude"], "tz": r.get("timezone"), "country": r.get("country", "")}
 
 
 def refresh_data(force=False):
@@ -189,19 +213,13 @@ def refresh_data(force=False):
         online = False
         cache["err_weather"] = str(e)[:100]
     try:
-        if due("fx", cfg["fx_every"]) or any(s not in cache.get("fx", {}) for s in cfg["fx"] if s != cfg.get("fx_base")):
-            cache["fx"] = fetch_fx(cfg)
+        items = cache.setdefault("items", {})
+        errs = markets.refresh(cfg, items, force=force, now=now)
+        cache["err_items"] = errs
+        if errs and all(k.startswith(("coin", "coins")) for k in errs):
+            online = False
     except Exception as e:
-        cache["err_fx"] = str(e)[:100]
-    try:
-        if due("crypto", cfg["crypto_every"]):
-            cache["crypto"] = fetch_crypto(cfg, cache.get("crypto"))
-        if "crypto" in cache and (force or now - cache["crypto"].get("t30", 0) >= cfg["series_every"]
-                                  or any(c.get("s30") is None for c in cache["crypto"]["coins"].values())):
-            fetch_series30(cfg, cache["crypto"])
-    except Exception as e:
-        online = False
-        cache["err_crypto"] = str(e)[:100]
+        cache["err_items"] = {"all": str(e)[:100]}
     try:
         gcal.sync(force=force)
     except Exception as e:
@@ -235,7 +253,9 @@ def usd(text):
 
 
 def fmt_rate(v):
-    return "—" if v is None else dec("%.2f" % v)
+    if v is None:
+        return "—"
+    return dec("%.2f" % v) if v >= 1 else dec("%.4g" % v)
 
 
 def fmt_price(p):
@@ -297,11 +317,77 @@ def hour_label(hhmm, cfg):
 
 
 def flag_name(sym):
-    return "f_" + (sym.lower() if sym.lower() in ("usd", "eur", "pln", "czk", "uah", "gbp") else "other")
+    if sym.lower() in ("usd", "eur", "pln", "czk", "uah", "gbp"):
+        return "f_" + sym.lower()
+    try:
+        from build_icons import ensure_badge
+        return ensure_badge("f", sym)
+    except Exception:
+        return "f_other"
 
 
 def coin_name(sym):
-    return "c_" + (sym.lower() if sym.lower() in ("btc", "eth", "ton") else "other")
+    if sym.lower() in ("btc", "eth", "ton"):
+        return "c_" + sym.lower()
+    try:
+        from build_icons import ensure_badge
+        return ensure_badge("c", sym)
+    except Exception:
+        return "c_other"
+
+
+def item_icon(it):
+    if it["k"] == "fx":
+        return flag_name(it["s"])
+    if it["k"] == "coin":
+        return coin_name(it["s"])
+    try:
+        from build_icons import ensure_badge
+        return ensure_badge("y", it["s"])
+    except Exception:
+        return "c_other"
+
+
+def money(price, cur):
+    """Цена с валютой: «83 094 $» (ru) / «$83,094» (en); для евро, фунтов и прочего — свой знак."""
+    if price is None:
+        return "—"
+    t = fmt_price(price)
+    if cur == "USD":
+        return usd(t)
+    sym = markets.CUR_SYMBOL.get(cur)
+    if sym in ("€", "£", "¥") and LANG == "en":
+        return sym + t
+    return "%s %s" % (t, sym or cur)
+
+
+def item_label(it, base):
+    return "%s/%s" % (it["s"], base) if it["k"] == "fx" else it["s"]
+
+
+def item_text(it, d, base):
+    """(метка, цена, изменение) строки списка; пустая цена — «—», если данных пока нет."""
+    label = item_label(it, base)
+    if not d:
+        return label, "—", ""
+    price = fmt_rate(d["price"]) if it["k"] == "fx" else money(d["price"], d.get("cur", "USD"))
+    return label, price, fmt_change(d["chg"])
+
+
+def item_series(d, period=None):
+    """Ряд для графика: запрошенный период, а если его нет у этого актива — лучший из имеющихся."""
+    if not d:
+        return None
+    order = {"24h": ("s24", "s7", "s30"), "7d": ("s7", "s30", "s24"), "30d": ("s30", "s7", "s24")}.get(period or "7d", ("s7", "s30", "s24"))
+    for k in order:
+        if d.get(k):
+            return d[k]
+    return None
+
+
+def titles(cfg):
+    t = cfg.get("titles") or [None, None]
+    return (t[0] or tr("ui_markets1"), (t[1] or tr("ui_markets2")) if len(t) > 1 else tr("ui_markets2"))
 
 
 def countdown(start_iso, end_iso, now):
@@ -336,21 +422,26 @@ def demo_cache(cfg):
             out.append(base * (1 + drift * (i - n + 1) / (n - 1) + v - 0))
         shift = base / out[-1]
         return [x * shift for x in out]
-    if cfg.get("fx_base") == "RUB":
-        demo_fx = {"USD": (92.45, 0.62), "EUR": (99.18, -0.31), "PLN": (23.41, 0.48), "CZK": (4.02, 0.12), "UAH": (2.23, -0.2), "GBP": (116.4, 0.3)}
-    else:
-        demo_fx = {"USD": (1.0912, 0.22), "EUR": (1.0, 0.0), "PLN": (0.2331, -0.04), "CZK": (0.0398, 0.1), "GBP": (1.1836, 0.33), "UAH": (0.0242, -0.2)}
-    fx = {"t": time.time()}
-    for k, sym in enumerate(cfg["fx"]):
-        r, c = demo_fx.get(sym, (50.0 + 10 * k, 0.1))
-        fx[sym] = {"rate": r, "chg": c, "s7": series(r, 7, 0.004, c / 100 * 3, k)}
-    demo_c = {"BTC": (63482, 2.18), "ETH": (3072, -1.24), "TON": (7.41, 0.96)}
-    coins = {}
-    for k, (cid, sym) in enumerate(cfg["coins"]):
-        pr, ch = demo_c.get(sym, (10.0, 0.5))
-        coins[cid] = {"sym": sym, "price": pr, "chg": ch, "s24": series(pr, 24, 0.004, ch / 100, k), "s7": series(pr, 56, 0.012, ch / 100 * 2, k),
-                      "s30": series(pr, 60, 0.03, ch / 100 * 4, k)}
-    return {"weather": weather, "fx": fx, "crypto": {"t": time.time(), "coins": coins, "t30": time.time()}, "online": True}
+    base = cfg.get("fx_base", "RUB")
+    demo_fx = ({"USD": (92.45, 0.62), "EUR": (99.18, -0.31), "PLN": (23.41, 0.48), "CZK": (4.02, 0.12), "CHF": (100.8, 0.2), "GBP": (116.4, 0.3)}
+               if base == "RUB" else
+               {"USD": (1.0912, 0.22), "PLN": (0.2331, -0.04), "CZK": (0.0398, 0.1), "CHF": (1.04, 0.2), "GBP": (1.1836, 0.33)})
+    demo_other = {"BTC": (83220, -0.07), "ETH": (2497, -1.81), "TON": (1.37, -2.86), "SOL": (105.8, -4.49), "GOLD": (4208.6, 0.43),
+                  "BRENT": (104.7, -0.9), "AAPL": (231.4, 0.8), "SILVER": (52.4, 1.1), "WTI": (99.8, -0.7), "S&P 500": (6890, 0.3)}
+    items = {}
+    for lst in cfg["lists"]:
+        for k, it in enumerate(lst):
+            key = markets.item_key(it)
+            if it["k"] == "fx":
+                p, c = demo_fx.get(it["s"], (50.0 + 10 * k, 0.1))
+                cur = base
+            else:
+                p, c = demo_other.get(it["s"], (100.0 + 7 * k, 0.5))
+                cur = "USD"
+            items[key] = {"price": p, "chg": c, "cur": cur, "s24": series(p, 24, 0.004, c / 100, k) if it["k"] != "fx" else None,
+                          "s7": series(p, 56 if it["k"] != "fx" else 7, 0.012 if it["k"] != "fx" else 0.004, c / 100 * 2, k),
+                          "s30": series(p, 60, 0.03, c / 100 * 4, k), "t": time.time()}
+    return {"weather": weather, "items": items, "online": True}
 
 
 def demo_google(y, m, sel):
@@ -445,7 +536,13 @@ def render():
     except Exception:
         google = {"connected": False, "events": [], "days": {}, "tasks": []}
     connected = bool(google.get("connected"))
-    dots = google["days"] if connected else {}
+    dots = google["days"]
+    inp = state.get("input")  # task | event | fx | coin — открыто окно ввода
+    toast = state.get("toast") or {}
+    if toast.get("until", 0) < time.time():
+        toast = {}
+    if toast.get("sec") == "city":
+        T["w.loc"] = toast["msg"]
     n = 0
     for day, colors in dots.items():
         i = day + first_wd - 1
@@ -460,22 +557,46 @@ def render():
     for j in range(n, 60):
         G[f"dot{j}"] = NONE_SHAPE
     online = cache.get("online", True)
-    T["cal.sync"] = tr("offline") if not online else (tr("synced") % google["synced"] if google.get("synced") else "")
+    if not online:
+        T["cal.sync"] = tr("offline")
+    elif connected and google.get("synced"):
+        T["cal.sync"] = tr("synced") % google["synced"]
+    elif not connected:
+        T["cal.sync"] = tr("connect_google")
     G["stale"] = rgba("warning") if not online else rgba("accent")
 
     # --- повестка
-    events = google.get("events", []) if connected else []
+    events = google.get("events", [])
     tasks = google.get("tasks", [])
-    T["ag.title"] = (tr("today_fmt") if sel == today else tr("day_fmt")).format(d=sel.day, m=MONTHS_GEN[sel.month - 1])
-    T["ag.empty"] = tr("no_events") if (connected and not events) else ""
+    typing = inp in ("task", "event")
+    if typing:
+        T["ag.title"] = tr("in_" + inp)
+    else:
+        T["ag.title"] = (tr("today_fmt") if sel == today else tr("day_fmt")).format(d=sel.day, m=MONTHS_GEN[sel.month - 1])
+    if typing:
+        T["ag.empty"] = tr("hint_" + inp)
+    else:
+        T["ag.empty"] = tr("no_events") if not events else ""
+    T["in.hint"] = tr("hint_keys")
+    T["fx.title"] = toast["msg"] if toast.get("sec") == "fx" else (tr("in_fx") if inp == "fx" else tr("ui_currencies"))
+    T["cr.title"] = toast["msg"] if toast.get("sec") == "coin" else (tr("in_coin") if inp == "coin" else tr("ui_crypto"))
+    evmap = []
     for i in range(NE):
-        if i < len(events):
+        if i < len(events) and not typing:
             e = events[i]
+            if i == NE - 1 and len(events) > NE:
+                T[f"ev{i}.t"], T[f"ev{i}.n"] = "", tr("more_events") % (len(events) - NE + 1)
+                G[f"col.ev{i}"] = "0,0,0,0"
+                evmap.append(-1)
+                continue
             T[f"ev{i}.t"] = e["time"].replace(" – ", " %s " % EN) if " – " in e["time"] else e["time"]
             T[f"ev{i}.n"] = e["title"]
             G[f"col.ev{i}"] = hex_rgba(e.get("color", COLORS["accent"]))
+            evmap.append(e.get("lid", -1) if e.get("lid") is not None else -1)
         else:
             G[f"col.ev{i}"] = "0,0,0,0"
+            evmap.append(-1)
+    state["evmap"] = evmap
     for i in range(NT):
         has = i < len(tasks)
         done = has and tasks[i].get("done")
@@ -489,50 +610,47 @@ def render():
         else:
             G[f"chk{i}a"] = G[f"chk{i}b"] = NONE_SHAPE
     T["status"] = ""
+    T["tk.empty"] = tr("no_tasks") if not tasks else ""
 
-    # --- валюты
-    fx = cache.get("fx") or {}
+    # --- списки котировок (две карточки по 3 строки): валюты / золото / нефть / крипта / акции — что выбрал пользователь
+    store = cache.get("items") or {}
     base = cfg.get("fx_base", "RUB")
-    comp = []
-    for i in range(NF):
-        sym = cfg["fx"][i] if i < len(cfg["fx"]) else None
-        d = fx.get(sym) if sym else None
-        G[f"fl.fx{i}"] = flag_name(sym) if sym else "f_none"
-        if d:
-            T[f"fx{i}.p"] = "%s/%s" % (sym, base)
-            T[f"fx{i}.r"] = fmt_rate(d["rate"])
-            T[f"fx{i}.c"] = fmt_change(d["chg"])
-            ch = trend_hex(d["chg"])
-            line, area = spark_paths(d["s7"], SPARK_W, SPARK_H)
-        else:
-            T[f"fx{i}.p"], T[f"fx{i}.r"], T[f"fx{i}.c"] = (("%s/%s" % (sym, base)) if sym else ""), "—", ""
-            ch = COLORS["textDim"]
-            line, area = spark_paths([], SPARK_W, SPARK_H)
-        G[f"sp.fx{i}.l"], G[f"sp.fx{i}.a"] = line, area
-        G[f"col.fx{i}"], G[f"cola.fx{i}"] = hex_rgba(ch), hex_rgba(ch, 0.14)
+    lists = cfg.get("lists") or [[], []]
+    while len(lists) < 2:
+        lists.append([])
+    T["fx.title"], T["cr.title"] = titles(cfg)
+    for L, (pf, kk) in enumerate((("fx", "fx"), ("cr", "c"))):
+        for i in range(3):
+            it = lists[L][i] if i < len(lists[L]) else None
+            d = store.get(markets.item_key(it)) if it else None
+            G[("fl.fx%d" if L == 0 else "lg.c%d") % i] = item_icon(it) if it else ("f_none" if L == 0 else "c_none")
+            lab, pr, chg = item_text(it, d, base) if it else ("", "", "")
+            if L == 0:
+                T[f"fx{i}.p"], T[f"fx{i}.r"], T[f"fx{i}.c"] = lab, pr, chg
+            else:
+                T[f"cr{i}.s"], T[f"cr{i}.p"], T[f"cr{i}.c"] = lab, pr, chg
+            ch = trend_hex(d["chg"]) if d else COLORS["textDim"]
+            line, area = spark_paths(item_series(d, "7d") if d else [], SPARK_W, SPARK_H)
+            G[f"sp.{kk}{i}.l" if L else f"sp.fx{i}.l"], G[f"sp.{kk}{i}.a" if L else f"sp.fx{i}.a"] = line, area
+            G[f"col.{kk}{i}" if L else f"col.fx{i}"], G[f"cola.{kk}{i}" if L else f"cola.fx{i}"] = hex_rgba(ch), hex_rgba(ch, 0.14)
+    # подписи окон ввода/ошибок поверх заголовков карточек
+    if toast.get("sec") == "add0":
+        T["fx.title"] = toast["msg"]
+    elif inp == "add0":
+        T["fx.title"] = tr("in_add")
+    if toast.get("sec") == "add1":
+        T["cr.title"] = toast["msg"]
+    elif inp == "add1":
+        T["cr.title"] = tr("in_add")
 
-    # --- крипта
-    cr = (cache.get("crypto") or {}).get("coins", {})
-    coins = cfg["coins"]
-    for i in range(NC):
-        cid, sym = coins[i] if i < len(coins) else (None, "")
-        d = cr.get(cid) if cid else None
-        G[f"lg.c{i}"] = coin_name(sym) if sym else "c_none"
-        if d:
-            T[f"cr{i}.s"], T[f"cr{i}.p"], T[f"cr{i}.c"] = sym, usd(fmt_price(d["price"])), fmt_change(d["chg"])
-            ch = trend_hex(d["chg"])
-            line, area = spark_paths(d["s7"], SPARK_W, SPARK_H)
-        else:
-            T[f"cr{i}.s"], T[f"cr{i}.p"], T[f"cr{i}.c"] = sym, "—", ""
-            ch = COLORS["textDim"]
-            line, area = spark_paths([], SPARK_W, SPARK_H)
-        G[f"sp.c{i}.l"], G[f"sp.c{i}.a"] = line, area
-        G[f"col.c{i}"], G[f"cola.c{i}"] = hex_rgba(ch), hex_rgba(ch, 0.14)
-
-    # --- график (раскрытая монета)
-    ci = min(state.get("coin", 0), max(0, len(coins) - 1))
-    cid, sym = coins[ci]
-    d = cr.get(cid)
+    # --- график (раскрытая строка списка)
+    cl, cr_i = 1, 0
+    try:
+        cl, cr_i = (int(x) for x in str(state.get("chart", "1:0")).split(":"))
+    except ValueError:
+        pass
+    cit = lists[cl][cr_i] if cl < len(lists) and cr_i < len(lists[cl]) else None
+    d = store.get(markets.item_key(cit)) if cit else None
     per = state.get("period", "7d")
     for i, p in enumerate(("24h", "7d", "30d")):
         G[f"pc{i}"] = rgba("text") if p == per else rgba("textDim")
@@ -540,8 +658,9 @@ def render():
     G["ch.a"] = "0,0 | LineTo 0,0 | ClosePath 1"
     G["ch.dot"], G["ch.cury"] = NONE_SHAPE, "0"
     G["ch.col"], G["ch.cola"] = rgba("accent"), rgba("accent", 0.12)
-    T["ch.title"] = "%s · %s" % (sym, usd(fmt_price(d["price"]))) if d else sym
-    series = {"24h": d.get("s24"), "7d": d.get("s7"), "30d": d.get("s30")}.get(per) if d else None
+    cprice = (lambda v: fmt_rate(v) if cit["k"] == "fx" else money(v, d.get("cur", "USD"))) if (cit and d) else None
+    T["ch.title"] = "%s · %s" % (item_label(cit, base), cprice(d["price"])) if cprice else (item_label(cit, base) if cit else "")
+    series = item_series(d, per)
     if d and series:
         CW_, CH_ = 344, 240
         lo, hi = min(min(series), d["price"]), max(max(series), d["price"])
@@ -561,51 +680,45 @@ def render():
         py = CH_ - (d["price"] - lo2) / (hi2 - lo2) * CH_
         G["ch.dot"] = "Ellipse %s,%s,%s | Fill Color %s | StrokeWidth 0" % (S(CW_ - 1), S(py), S(3.5), rgba("accent"))
         G["ch.cury"] = str(S(min(max(py - 26, 0), CH_ - 22)))
-        T["ch.current"] = usd(fmt_price(d["price"]))
-        T["ch.minmax"] = tr("minmax") % (usd(fmt_price(min(series))), usd(fmt_price(max(series))))
+        T["ch.current"] = cprice(d["price"])
+        T["ch.minmax"] = tr("minmax") % (cprice(min(series)), cprice(max(series)))
     else:
         T["ch.minmax"], T["ch.current"] = tr("no_data"), ""
 
     # --- компактный режим
     upcoming = []
-    if connected:
-        try:
-            today_ev = events if sel == today else (demo_google if DEMO else (lambda y, m, d: gcal.view(y, m, d)))(today.year, today.month, today)["events"]
-            for e in today_ev:
-                if e.get("start"):
-                    st = dt.datetime.fromisoformat(e["start"])
-                    en = dt.datetime.fromisoformat(e["end"]) if e.get("end") else st
-                    if en >= now or st >= now:
-                        upcoming.append((e["time"].replace(" – ", " %s " % EN), e["title"], countdown(e["start"], e.get("end"), now), e["color"]))
-                else:
-                    upcoming.append((e["time"], e["title"], "", e["color"]))
-            if len(upcoming) < 2:
-                tm = today + dt.timedelta(days=1)
-                tev = gcal.month_events(tm.year, tm.month).get(tm.day, [])
-                for e in tev[:2 - len(upcoming)]:
-                    upcoming.append((tr("tomorrow") + " " + e["time"].split(" ")[0], e["title"], "", e["color"]))
-        except Exception:
-            upcoming = []
+    try:
+        today_ev = events if sel == today else (demo_google if DEMO else (lambda y, m, d: gcal.view(y, m, d)))(today.year, today.month, today)["events"]
+        for e in today_ev:
+            if e.get("start"):
+                st = dt.datetime.fromisoformat(e["start"])
+                en = dt.datetime.fromisoformat(e["end"]) if e.get("end") else st
+                if en >= now or st >= now:
+                    upcoming.append((e["time"].replace(" – ", " %s " % EN), e["title"], countdown(e["start"], e.get("end"), now), e["color"]))
+            else:
+                upcoming.append((e["time"], e["title"], "", e["color"]))
+        if len(upcoming) < 2:
+            tm = today + dt.timedelta(days=1)
+            tev = gcal.month_events(tm.year, tm.month).get(tm.day, [])
+            for e in tev[:2 - len(upcoming)]:
+                upcoming.append((tr("tomorrow") + " " + e["time"].split(" ")[0], e["title"], "", e["color"]))
+    except Exception:
+        upcoming = []
     for i in range(2):
         if i < len(upcoming):
             T[f"cp.ev{i}.t"], T[f"cp.ev{i}.n"], T[f"cp.ev{i}.in"] = upcoming[i][:3]
             G[f"cpcol.ev{i}"] = hex_rgba(upcoming[i][3])
         else:
             G[f"cpcol.ev{i}"] = "0,0,0,0"
-    T["cp.empty"] = tr("no_events") if connected else tr("cp_disconnected")
-    tiles = [(cfg["fx"][0], "fx0"), (cfg["fx"][1], "fx1")] if len(cfg["fx"]) > 1 else []
-    for i in range(3):
-        if i < 2 and i < len(cfg["fx"]) and cfg["fx"][i] in fx:
-            sym = cfg["fx"][i]
-            dd = fx[sym]
-            T[f"cp.f{i}.p"], T[f"cp.f{i}.r"], T[f"cp.f{i}.c"] = "%s/%s" % (sym, base), fmt_rate(dd["rate"]), fmt_change(dd["chg"])
-            line, area = spark_paths(dd["s7"], TILE_SPARK_W, TILE_SPARK_H)
-            ch = trend_hex(dd["chg"])
-        elif i == 2 and coins and cr.get(coins[0][0]):
-            dd = cr[coins[0][0]]
-            T[f"cp.f{i}.p"], T[f"cp.f{i}.r"], T[f"cp.f{i}.c"] = coins[0][1], usd(fmt_price(dd["price"])), fmt_change(dd["chg"])
-            line, area = spark_paths(dd["s7"], TILE_SPARK_W, TILE_SPARK_H)
-            ch = trend_hex(dd["chg"])
+    T["cp.empty"] = tr("no_events")
+    tiles = [lists[0][0] if lists[0] else None, lists[0][1] if len(lists[0]) > 1 else None, lists[1][0] if lists[1] else None]
+    for i, it in enumerate(tiles):
+        d = store.get(markets.item_key(it)) if it else None
+        if it and d:
+            lab, pr, chg = item_text(it, d, base)
+            T[f"cp.f{i}.p"], T[f"cp.f{i}.r"], T[f"cp.f{i}.c"] = lab, pr, chg
+            line, area = spark_paths(item_series(d, "7d"), TILE_SPARK_W, TILE_SPARK_H)
+            ch = trend_hex(d["chg"])
         else:
             line, area = spark_paths([], TILE_SPARK_W, TILE_SPARK_H)
             ch = COLORS["textDim"]
@@ -619,19 +732,35 @@ def render():
     chart = bool(state.get("chartOpen")) and not compact
     H1 = lambda cond: "1" if cond else "0"  # noqa: E731
     G["hid.ex"] = H1(compact)
-    G["hid.cal"] = H1(compact or not connected)
-    G["hid.sync"] = H1(compact or not connected)
-    G["hid.ag"] = H1(compact or chart or not connected)
-    G["hid.go"] = H1(compact or connected or chart)
+    G["hid.cal"] = H1(compact)
+    G["hid.sync"] = H1(compact)
+    G["hid.ag"] = H1(compact or chart)
+    G["hid.go"] = "1"
     G["hid.lists"] = H1(compact or chart)
     G["hid.ch"] = H1(not chart)
     G["hid.k"] = H1(not compact)
-    G["hid.kev"] = H1(not (compact and connected and upcoming))
-    G["hid.kempty"] = H1(not (compact and not (connected and upcoming)))
-    G["hid.kgo"] = H1(not (compact and not connected))
+    G["hid.kev"] = H1(not (compact and upcoming))
+    G["hid.kempty"] = H1(not (compact and not upcoming))
+    G["hid.kgo"] = "1"
+    ag_off = compact or chart
+    G["hid.btn"] = H1(ag_off or typing)
+    G["hid.inag"] = H1(ag_off or not typing)
+    G["hid.fxadd"] = H1(compact or chart or inp in ("add0", "add1"))
+    G["hid.infx"] = H1(compact or chart or inp != "add0")
+    G["hid.incr"] = H1(compact or chart or inp != "add1")
+    G["hid.inwx"] = H1(compact or inp != "city")
+    G["hid.tkempty"] = H1(ag_off or bool(tasks))
+    for i in range(NE):
+        G[f"hid.evx{i}"] = H1(ag_off or typing or i >= len(evmap) or evmap[i] < 0)
+    for i in range(NT):
+        G[f"hid.tkx{i}"] = H1(ag_off or i >= len(tasks))
 
     write_chunks("text", text_keys(), T)
     write_chunks("geo", geo_keys(), G)
+    with state_lock():
+        st = load_json(STATE, DEFAULT_STATE)
+        st["evmap"] = evmap
+        save_json(STATE, st)
 
 
 def write_chunks(prefix, keys, values):
@@ -645,7 +774,23 @@ def write_chunks(prefix, keys, values):
 
 
 # ---------------------------------------------------------------- действия
+def poke():
+    """Просит Rainmeter сразу перечитать файлы данных (иначе виджет обновится только на следующем тике)."""
+    try:
+        subprocess.Popen([RAINMETER, "!Update", load_config().get("skin_name", "TihiyDen")], creationflags=0x08000000)
+    except Exception:
+        pass
+
+
 def act(name, arg=None):
+    if name == "inputoff":
+        # окно ввода закрылось (Esc / потеря фокуса, а при Enter — ещё и вслед за командой «in»):
+        # ждём, чтобы не затереть результат «in» (например, сообщение об ошибке)
+        time.sleep(1.5)
+        if not load_json(STATE, DEFAULT_STATE).get("input"):
+            return
+    lock = state_lock()
+    lock.__enter__()
     state = load_json(STATE, DEFAULT_STATE)
     today = dt.date.today()
     if name == "mode":
@@ -670,8 +815,15 @@ def act(name, arg=None):
         state["month"] = state["year"] = state["selected"] = None
     elif name == "chart":
         state["chartOpen"] = True
-        state["coin"] = int(arg)
+        state["chart"] = arg
         state["period"] = "7d"
+    elif name == "rm":
+        cfg_ = load_config()
+        li, ri = (int(x) for x in arg.split(":"))
+        if li < len(cfg_["lists"]) and ri < len(cfg_["lists"][li]):
+            del cfg_["lists"][li][ri]
+            save_config(cfg_)
+            refresh_data()
     elif name == "chartclose":
         state["chartOpen"] = False
     elif name == "period":
@@ -688,10 +840,138 @@ def act(name, arg=None):
             with open(gcal.TASK_FILE, "w", encoding="utf-8") as f:
                 f.write(tr("task_example"))
         subprocess.Popen(["notepad.exe", gcal.TASK_FILE])
-    elif name in ("fxsettings", "cryptosettings"):
+    elif name == "cfg":
         subprocess.Popen(["notepad.exe", CONFIG])
+    elif name == "inputon":
+        if time.time() - state.get("input_done", 0) > 2.0:  # запоздавший inputon после быстрого Enter не должен открывать режим заново
+            state["input"] = arg
+            state.pop("toast", None)
+    elif name == "inputoff":
+        state["input"] = None
+    elif name == "tkdel":
+        gcal.delete_task(int(arg))
+    elif name == "evdel":
+        evmap = state.get("evmap") or []
+        i = int(arg)
+        if i < len(evmap) and evmap[i] >= 0:
+            gcal.delete_local_event(evmap[i])
+    elif name == "gclick":
+        meta = load_json(gcal.META, {})
+        if meta.get("ok"):
+            gcal.sync(force=True)
+        else:
+            gcal.calendars()
+            subprocess.Popen(["notepad.exe", gcal.CAL_FILE])
     save_json(STATE, state)
+    lock.__exit__()
     render()
+    poke()
+
+
+TIME_RE = r"(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?"
+
+
+def _parse_clock(txt):
+    """'18:30' | '6:30pm' | '6pm' -> 'HH:MM' или None (голое число без минут и am/pm временем не считаем)."""
+    m = re.fullmatch(TIME_RE, txt.strip().lower())
+    if not m or (m.group(2) is None and m.group(3) is None):
+        return None
+    h, mi, ap = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if ap == "pm" and h < 12:
+        h += 12
+    if ap == "am" and h == 12:
+        h = 0
+    return "%02d:%02d" % (h, mi) if h < 24 and mi < 60 else None
+
+
+def parse_event(text):
+    """'18:30-19:45 Встреча' -> ('18:30', '19:45', 'Встреча'); без времени -> ('', '', 'Встреча')."""
+    text = text.strip()
+    m = re.match(r"^(\S+?)\s*[-–]\s*(\S+)\s+(.+)$", text)
+    if m:
+        a, b = _parse_clock(m.group(1)), _parse_clock(m.group(2))
+        if a and b:
+            return a, b, m.group(3).strip()
+    m = re.match(r"^(\S+(?:\s*[ap]m)?)\s+(.+)$", text, re.I)
+    if m:
+        a = _parse_clock(m.group(1))
+        if a:
+            return a, "", m.group(2).strip()
+    return "", "", text
+
+
+def toast_msg(state, sec, msg):
+    state["toast"] = {"sec": sec, "msg": msg, "until": time.time() + 6}
+
+
+def finish_input(state, kind, orig):
+    """Закрывает режим ввода и переносит результат (сообщение об ошибке, выбранную монету) в свежий state.json."""
+    with state_lock():
+        st = load_json(STATE, DEFAULT_STATE)
+        st["input"] = None
+        st["input_done"] = time.time()
+        if state.get("toast") != orig["toast"]:
+            st["toast"] = state.get("toast")
+        if state.get("chart") != orig["chart"]:
+            st["chart"] = state.get("chart")
+        save_json(STATE, st)
+
+
+def add_input(kind, text):
+    """Результат окна ввода (Enter): добавляет задачу / событие / валюту / монету."""
+    text = (text or "").strip()
+    state = load_json(STATE, DEFAULT_STATE)
+    orig = {"toast": state.get("toast"), "chart": state.get("chart")}
+    if not text:
+        finish_input(state, kind, orig)
+        render()
+        poke()
+        return
+    cfg = load_config()
+    if kind == "task":
+        gcal.add_task(text)
+    elif kind == "event":
+        sel = dt.date.fromisoformat(state["selected"]) if state.get("selected") else dt.date.today()
+        st, en, title = parse_event(text)
+        gcal.add_local_event(sel, st, en, title)
+    elif kind in ("add0", "add1"):
+        li = int(kind[-1])
+        base = cfg.get("fx_base", "RUB")
+        item, err = markets.resolve(text, base)
+        if not item:
+            toast_msg(state, kind, tr("err_nofx") % text[:12] if err == "nofx" else tr("err_notfound") % text[:14])
+        else:
+            lists = cfg["lists"]
+            while len(lists) < 2:
+                lists.append([])
+            old = json.loads(json.dumps(lists))
+            key = markets.item_key(item)
+            lists[li] = ([item] + [it for it in lists[li] if markets.item_key(it) != key])[:3]
+            save_config(cfg)
+            cache = refresh_data(force=item["k"] == "coin")
+            if key not in (cache.get("items") or {}):
+                cfg["lists"] = old
+                save_config(cfg)
+                refresh_data()
+                toast_msg(state, kind, tr("err_notfound") % text[:14])
+            else:
+                state["chart"] = "%d:0" % li
+                toast_msg(state, kind, tr("added") % item_label(item, base))
+    elif kind == "city":
+        try:
+            g = geocode(text, cfg.get("lang", "ru"))
+        except Exception:
+            g = None
+            toast_msg(state, "city", tr("err_net"))
+        if g is None and not (state.get("toast") or {}).get("sec") == "city":
+            toast_msg(state, "city", tr("err_city") % text[:14])
+        elif g:
+            cfg.update({"lat": g["lat"], "lon": g["lon"], "label": g["label"], "tz": g["tz"]})
+            save_config(cfg)
+            refresh_data(force=True)
+    finish_input(state, kind, orig)
+    render()
+    poke()
 
 
 def main():
@@ -706,6 +986,8 @@ def main():
         render()
     elif cmd == "act":
         act(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
+    elif cmd == "in":
+        add_input(sys.argv[2], " ".join(sys.argv[3:]))
 
 
 if __name__ == "__main__":

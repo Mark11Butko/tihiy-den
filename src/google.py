@@ -2,6 +2,7 @@
 
 Файл calendars.txt: по одной строке «URL [#цвет] [название]». Строки с # в начале — комментарии.
 Файл tasks.txt: по одной задаче в строке; «x » в начале — выполнена.
+Файл events.txt: свои события, которые добавляются прямо из виджета (кнопка «Событие»).
 """
 import datetime as dt
 import json
@@ -18,6 +19,8 @@ from td_common import DATA, ROOT
 
 CAL_FILE = os.path.join(ROOT, "calendars.txt")
 TASK_FILE = os.path.join(ROOT, "tasks.txt")
+EVENT_FILE = os.path.join(ROOT, "events.txt")   # свои события: ГГГГ-ММ-ДД|ЧЧ:ММ|ЧЧ:ММ|название
+LOCAL_COLOR = "#8BD4E8FF"
 META = os.path.join(DATA, "gmeta.json")
 PALETTE = ["#8ACBFFFF", "#E8C487FF", "#91D6B1FF", "#F0A5A5FF", "#C3B1F0FF"]
 EVERY = 300
@@ -147,6 +150,8 @@ def month_events(y, m):
                     label, srt, st, en = "…", "00:00", None, None
                 days.setdefault(day.day, []).append({"sort": srt, "time": label, "title": title, "color": c["color"], "start": st, "end": en})
                 day += dt.timedelta(days=1)
+    for day_n, items in local_events(y, m).items():
+        days.setdefault(day_n, []).extend(items)
     for d in days.values():
         d.sort(key=lambda x: x["sort"])
     return days
@@ -166,6 +171,89 @@ def tasks():
     return out
 
 
+def _write_tasks(ts):
+    with open(TASK_FILE, "w", encoding="utf-8") as f:
+        for t in ts:
+            f.write(("x " if t["done"] else "") + t["title"] + "\n")
+
+
+def add_task(title):
+    title = title.strip()
+    if not title:
+        return
+    ts = tasks()
+    ts.append({"title": title, "done": False})
+    _write_tasks(ts)
+
+
+def delete_task(i):
+    ts = tasks()
+    if 0 <= i < len(ts):
+        del ts[i]
+        _write_tasks(ts)
+
+
+def _read_local():
+    out = []
+    if not os.path.exists(EVENT_FILE):
+        return out
+    with open(EVENT_FILE, encoding="utf-8") as f:
+        for n, line in enumerate(f):
+            p = line.rstrip("\n").split("|", 3)
+            if len(p) == 4 and p[3].strip():
+                out.append(p)
+            else:
+                out.append(None)  # пустая/битая строка сохраняет нумерацию
+    return out
+
+
+def _write_local(rows):
+    with open(EVENT_FILE, "w", encoding="utf-8") as f:
+        for p in rows:
+            if p:
+                f.write("|".join(p) + "\n")
+
+
+def add_local_event(day, start, end, title):
+    title = title.strip().replace("|", "/")
+    if not title:
+        return
+    rows = [r for r in _read_local() if r]
+    rows.append([day.isoformat(), start or "", end or "", title])
+    _write_local(rows)
+
+
+def delete_local_event(lid):
+    rows = _read_local()
+    if 0 <= lid < len(rows):
+        rows[lid] = None
+        _write_local(rows)
+
+
+def local_events(y, m):
+    """Свои события месяца в том же формате, что и события Google (+ lid — номер строки для удаления)."""
+    days = {}
+    for lid, p in enumerate(_read_local()):
+        if not p:
+            continue
+        try:
+            d = dt.date.fromisoformat(p[0])
+        except ValueError:
+            continue
+        if d.year != y or d.month != m:
+            continue
+        st, en, title = p[1], p[2], p[3]
+        if st:
+            label = st + ((" – " + en) if en else "")
+            start_iso = dt.datetime.combine(d, dt.time.fromisoformat(st)).isoformat()
+            end_iso = dt.datetime.combine(d, dt.time.fromisoformat(en)).isoformat() if en else None
+            item = {"sort": st, "time": label, "title": title, "color": LOCAL_COLOR, "start": start_iso, "end": end_iso, "lid": lid}
+        else:
+            item = {"sort": "0", "time": tr("all_day"), "title": title, "color": LOCAL_COLOR, "start": None, "end": None, "lid": lid}
+        days.setdefault(d.day, []).append(item)
+    return days
+
+
 def toggle_task(i):
     ts = tasks()
     if 0 <= i < len(ts):
@@ -180,8 +268,6 @@ def view(y, m, sel):
     meta = _load_meta()
     connected = bool(meta.get("ok"))
     res = {"connected": connected, "synced": meta.get("synced"), "events": [], "days": {}, "tasks": tasks(), "err": meta.get("err")}
-    if not connected:
-        return res
     days = month_events(y, m)
     for d, evs in days.items():
         seen = []

@@ -12,8 +12,12 @@ DEFAULT_CONFIG = {
     "label": "Bratislava",             # подпись города в виджете
     "lat": 48.1486, "lon": 17.1077,    # координаты для прогноза (Open-Meteo)
     "fx_base": "RUB",                  # RUB -> курсы ЦБ РФ; иначе (EUR/USD/PLN...) -> курсы ЕЦБ (Frankfurter)
-    "fx": ["USD", "EUR", "PLN"],
-    "coins": [["bitcoin", "BTC"], ["ethereum", "ETH"], ["the-open-network", "TON"]],
+    # два списка котировок (по 3 строки): валюты / золото / нефть / крипта / акции / индексы — что интересно пользователю
+    "lists": [
+        [{"k": "fx", "s": "USD"}, {"k": "fx", "s": "EUR"}, {"k": "fx", "s": "PLN"}],
+        [{"k": "coin", "id": "bitcoin", "s": "BTC"}, {"k": "coin", "id": "ethereum", "s": "ETH"}, {"k": "coin", "id": "the-open-network", "s": "TON"}],
+    ],
+    "titles": [None, None],            # свои названия карточек; None = стандартные
     "scale": 0.9,                      # размер виджета (0.7 .. 1.2)
     "clock24": True,
     "skin_name": "TihiyDen",
@@ -22,10 +26,16 @@ DEFAULT_CONFIG = {
 
 
 def load_config():
-    cfg = dict(DEFAULT_CONFIG)
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
-            cfg.update(json.load(f))
+            saved = json.load(f)
+        cfg.update(saved)
+        if "lists" not in saved:  # конфиг старого формата (fx + coins) -> списки
+            cfg["lists"] = [[{"k": "fx", "s": c} for c in saved.get("fx", ["USD", "EUR", "PLN"])],
+                            [{"k": "coin", "id": c[0], "s": c[1]} for c in saved.get("coins", [])]]
+        cfg.pop("fx", None)
+        cfg.pop("coins", None)
     except Exception:
         pass
     return cfg
@@ -141,7 +151,7 @@ CHUNK = 24
 NF = 3  # валют
 NC = 3  # монет
 NE = 3  # событий
-NT = 3  # задач
+NT = 4  # задач
 
 
 def text_keys():
@@ -151,7 +161,7 @@ def text_keys():
     for i in range(5):
         k += [f"d{i}.n", f"d{i}.d", f"d{i}.h", f"d{i}.l"]
     k += ["cal.title", "cal.sync"] + [f"c{i}" for i in range(42)]
-    k += ["ag.title", "ag.empty"]
+    k += ["ag.title", "ag.empty", "tk.empty", "fx.title", "cr.title", "in.hint"]
     for i in range(NE):
         k += [f"ev{i}.t", f"ev{i}.n"]
     k += [f"tk{i}" for i in range(NT)]
@@ -184,7 +194,8 @@ def geo_keys():
     k += ["ic.cur"] + [f"ic.h{i}" for i in range(6)] + [f"ic.d{i}" for i in range(5)]
     k += [f"fl.fx{i}" for i in range(NF)] + [f"lg.c{i}" for i in range(NC)] + [f"fl.t{i}" for i in range(3)]
     k += ["hid.ex", "hid.cal", "hid.ag", "hid.go", "hid.lists", "hid.ch", "hid.k", "hid.kev", "hid.kempty", "hid.kgo", "hid.sync"]
-    k += ["stale"]
+    k += ["stale"] + [f"hid.evx{i}" for i in range(NE)] + [f"hid.tkx{i}" for i in range(NT)]
+    k += ["hid.btn", "hid.fxadd", "hid.inag", "hid.infx", "hid.incr", "hid.tkempty", "hid.inwx"]
     return k
 
 

@@ -7,12 +7,12 @@
 ![Виджет](docs/screenshot-ru.png)
 
 ## Что умеет
-- Погода: сейчас, по часам, на 5 дней (Open-Meteo)
+- Погода: сейчас, по часам, на 5 дней. **Город меняется кликом по названию** — вводите «Вена» или «Paris, US», через секунду готово. Источник Open-Meteo, а если он не отвечает — автоматически met.no
 - Календарь с точками событий и списком дел на выбранный день
-- **Google Календарь** — по секретной iCal-ссылке (только чтение, без OAuth)
-- Задачи — простой файл `tasks.txt`
-- Курсы валют: ЦБ РФ (база RUB) или ЕЦБ (EUR, USD, PLN…)
-- Криптовалюты (CoinGecko), график 24Ч / 7Д / 30Д по клику
+- **Задачи и события добавляются прямо в виджете** (кнопки «Задача» / «Событие», ввод вроде `18:30 Встреча`), галочка — выполнено, × — удалить. Без текстовых файлов
+- **Google Календарь** — по секретной iCal-ссылке (только чтение, без OAuth); свои события показываются вместе с ним
+- **Свои котировки: что интересно вам.** Две карточки по 3 строки, кнопка «Добавить» принимает что угодно: валюту (`CHF`), `золото`, `нефть`, `серебро`, монету (`SOL`), акцию (`AAPL`, `Tesla`), индекс (`S&P`, `NASDAQ`). Клик по строке — график 24Ч / 7Д / 30Д, правая кнопка — убрать из списка
+- Валюты: ЦБ РФ (база RUB) или ЕЦБ; крипта — CoinGecko; металлы, нефть, акции, индексы — Yahoo Finance
 - Компактный режим, русский и английский интерфейс
 - Положение окна не «убегает» в угол после сна ноутбука
 
@@ -37,7 +37,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 Адрес — это ключ доступа к календарю: **не публикуйте его**. Файл `calendars.txt` лежит только у вас на компьютере и в репозиторий не попадает (`.gitignore`).
 
 ## Настройка
-`%LOCALAPPDATA%\TihiyDen\data\config.json`: язык (`lang`), город и координаты (`label`, `lat`, `lon`), валюты (`fx`), монеты (`coins`, id с CoinGecko), размер (`scale`), 24-часовой формат (`clock24`). После правки — `python build_skin.py` в папке программы (для языка и размера).
+Почти всё меняется прямо в виджете (город, задачи, события, списки котировок). Остальное — в `%LOCALAPPDATA%\TihiyDen\data\config.json` (значок ⚙ в шапке открывает его): язык (`lang`), размер (`scale`), 24-часовой формат (`clock24`), базовая валюта (`fx_base`), названия карточек (`titles`). После правки языка или размера выполните `python build_skin.py` в папке программы.
 
 ## Удаление
 ```powershell
@@ -46,7 +46,7 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 Скин и папка программы уходят в Корзину, задачи Планировщика удаляются.
 
 ## Источники данных и благодарности
-[Open-Meteo](https://open-meteo.com/) (погода, CC BY 4.0) · [ЦБ РФ](https://www.cbr.ru/) · [Frankfurter / ЕЦБ](https://frankfurter.dev/) · [CoinGecko](https://www.coingecko.com/) · [Rainmeter](https://www.rainmeter.net/).
+[Open-Meteo](https://open-meteo.com/) (погода, CC BY 4.0) · [MET Norway](https://api.met.no/) · [ЦБ РФ](https://www.cbr.ru/) · [Frankfurter / ЕЦБ](https://frankfurter.dev/) · [CoinGecko](https://www.coingecko.com/) · Yahoo Finance (неофициальный публичный API: котировки могут запаздывать, это не инвестиционная рекомендация) · [Rainmeter](https://www.rainmeter.net/).
 Google и Google Calendar — товарные знаки Google LLC; проект с Google не связан.
 
 ## Лицензия
@@ -65,12 +65,12 @@ A dark glass desktop widget for Windows built on [Rainmeter](https://www.rainmet
 | ![Chart](docs/screenshot-chart-en.png) | ![Compact](docs/screenshot-compact-en.png) |
 
 ### Features
-- Weather: now, hourly, 5-day forecast (Open-Meteo)
+- Weather: now, hourly, 5-day forecast. **Change the city by clicking its name** — type "Vienna" or "Paris, US" and it is applied in a second. Open-Meteo, with automatic fallback to met.no
 - Month calendar with event dots and a day agenda
-- **Google Calendar** via the secret iCal URL (read-only, no OAuth)
-- Tasks in a plain `tasks.txt`
-- Exchange rates: Bank of Russia (base RUB) or ECB (EUR, USD, PLN…)
-- Crypto prices (CoinGecko) with 24H / 7D / 30D chart
+- **Add tasks and events right in the widget** ("Task" / "Event" buttons, input like `6:30pm Meeting`), checkbox to complete, × to delete. No text files
+- **Google Calendar** via the secret iCal URL (read-only, no OAuth); your own events are shown alongside it
+- **Your own watchlists.** Two cards of three rows; the "Add" button takes anything: a currency (`CHF`), `gold`, `oil`, `silver`, a coin (`SOL`), a stock (`AAPL`, `Tesla`), an index (`S&P`, `NASDAQ`). Click a row for a 24H / 7D / 30D chart, right-click to remove it
+- Currencies: Bank of Russia (base RUB) or ECB; crypto — CoinGecko; metals, oil, stocks, indices — Yahoo Finance
 - Compact mode, Russian and English UI
 - The window no longer jumps to the screen corner after sleep
 
@@ -87,13 +87,13 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Lang en -City Vienna -FxBa
 Calendar settings → *Integrate calendar* → copy the **Secret address in iCal format** (contains `private-`; the public address will not work). Click *Connect Google* in the widget and paste it into `calendars.txt`. Treat that URL like a password — never commit or share it.
 
 ### Configuration
-`%LOCALAPPDATA%\TihiyDen\data\config.json` (language, city, currencies, coins, scale, 24h clock); run `python build_skin.py` in the app folder after changing language or scale.
+Almost everything is changed in the widget itself (city, tasks, events, watchlists). The rest lives in `%LOCALAPPDATA%\TihiyDen\data\config.json` (the ⚙ icon in the header opens it): language (`lang`), size (`scale`), 24h clock (`clock24`), base currency (`fx_base`), card titles (`titles`). Run `python build_skin.py` in the app folder after changing language or size.
 
 ### Uninstall
 `powershell -ExecutionPolicy Bypass -File uninstall.ps1` (moves files to the Recycle Bin, removes scheduled tasks).
 
 ### Data sources
-Open-Meteo (CC BY 4.0), Bank of Russia, Frankfurter / ECB, CoinGecko. Google and Google Calendar are trademarks of Google LLC; this project is not affiliated with Google.
+Open-Meteo (CC BY 4.0), MET Norway, Bank of Russia, Frankfurter / ECB, CoinGecko, Yahoo Finance (unofficial public API — quotes may be delayed and are not investment advice). Google and Google Calendar are trademarks of Google LLC; this project is not affiliated with Google.
 
 ### License
 MIT — see [LICENSE](LICENSE).

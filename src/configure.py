@@ -22,10 +22,8 @@ if a.lang:
     cfg["lang"] = a.lang
 if a.base:
     cfg["fx_base"] = a.base.upper()
-    if cfg["fx_base"] != "RUB":
-        cfg["fx"] = [c for c in ("USD", "EUR", "GBP", "PLN", "CZK") if c != cfg["fx_base"]][:3]
-    else:
-        cfg["fx"] = ["USD", "EUR", "PLN"]
+    pool = ["USD", "EUR", "GBP", "PLN", "CZK"] if cfg["fx_base"] != "RUB" else ["USD", "EUR", "PLN"]
+    cfg["lists"][0] = [{"k": "fx", "s": c} for c in pool if c != cfg["fx_base"]][:3]
 if a.scale:
     cfg["scale"] = a.scale
 if a.skin_name:

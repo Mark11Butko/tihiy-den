@@ -280,6 +280,32 @@ def google_g(size=96):
     return finish(img, size)
 
 
+def badge(text, size=64):
+    """Значок для любой валюты/монеты: цветной кружок с кодом (цвет — от кода, всегда один и тот же)."""
+    import colorsys
+    hue = (sum(ord(c) * (i + 3) for i, c in enumerate(text.upper())) * 37 % 360) / 360.0
+    top = tuple(int(v * 255) for v in colorsys.hsv_to_rgb(hue, 0.55, 0.95)) + (255,)
+    bot = tuple(int(v * 255) for v in colorsys.hsv_to_rgb(hue, 0.75, 0.62)) + (255,)
+    img = canvas(size)
+    paste_grad(img, circle_mask(size), top, bot)
+    d = ImageDraw.Draw(img)
+    label = text.upper()[:4]
+    px = {1: 30, 2: 28, 3: 22, 4: 17}[len(label)]
+    f = font("segoeuib.ttf", int(px * size / 64))
+    d.text((size * SS / 2, size * SS / 2), label, font=f, fill=(255, 255, 255, 255), anchor="mm")
+    return finish(img, size)
+
+
+def ensure_badge(kind, sym):
+    """Создаёт @Resources/icons/<kind>_<sym>.png, если такого значка ещё нет; возвращает имя файла без расширения."""
+    name = "%s_%s" % (kind, sym.lower())
+    path = os.path.join(SKIN_DIR, "@Resources", "icons", name + ".png")
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        badge(sym, 64).save(path)
+    return name
+
+
 def build():
     out = os.path.join(SKIN_DIR, "@Resources", "icons")
     os.makedirs(out, exist_ok=True)
