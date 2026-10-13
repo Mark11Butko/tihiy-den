@@ -8,38 +8,39 @@ def S(v):
     return round(v * SCALE, 2)
 
 
-W = 392
+W = 376
 PAD = 16
 IN_W = W - 2 * PAD  # 360
 
 # шапка
 HEADER_H = 78
 # погода
-WX_Y, WX_H = 84, 104
-HR_Y, HR_H = 194, 64
-DY_Y, DY_H = 264, 84
+WX_Y, WX_H = 88, 64
+HR_Y, HR_H = 160, 40
+DY_Y, DY_H = 208, 48
 # календарь
-CAL_Y, CAL_H = 354, 222
-CAL_TITLE_H = 34
+CAL_Y, CAL_H = 264, 184
+CAL_TITLE_H = 24
 CAL_WD_Y = CAL_Y + CAL_TITLE_H            # строка дней недели
-CAL_GRID_Y = CAL_WD_Y + 22                # начало сетки
+CAL_GRID_Y = CAL_WD_Y + 16                # начало сетки
 CW = IN_W / 7.0                           # ширина ячейки
-RH = 26                                   # высота строки сетки
+RH = 24                                   # высота строки сетки
 # повестка
-AG_Y, AG_H = 582, 238
+AG_Y, AG_H = 456, 112
 # валюты и крипта
-FX_Y, FX_H = 826, 114
-CR_Y, CR_H = 946, 114
-TOTAL_H = CR_Y + CR_H + 10                # 1058 дизайн-пикселей
+FX_Y, FX_H = 576, 80
+CR_Y, CR_H = 664, 80
+TOTAL_H = 760
 
 # компактный режим
-CP_WX_Y, CP_WX_H = 84, 88
-CP_EV_Y, CP_EV_H = 178, 96
-CP_FX_Y, CP_FX_H = 280, 70
-CP_TOTAL_H = CP_FX_Y + CP_FX_H + 12
+CP_WX_Y, CP_WX_H = 88, 32
+CP_EV_Y, CP_EV_H = 128, 72
+CP_FX_Y, CP_FX_H = 208, 40
+CP_TOTAL_H = 264
 
-# график (раскрытый, заменяет повестку+валюты+крипту)
-CH_Y, CH_H = AG_Y, CR_Y + CR_H - AG_Y
+# график заменяет только списки котировок; повестка остаётся видимой
+CH_Y, CH_H = FX_Y, CR_Y + CR_H - FX_Y
+CHART_W, CHART_H = 312, 64
 
-SPARK_W, SPARK_H = 76, 20
+SPARK_W, SPARK_H = 64, 16
 TILE_SPARK_W, TILE_SPARK_H = 54, 22

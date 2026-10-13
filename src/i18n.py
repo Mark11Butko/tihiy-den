@@ -144,5 +144,41 @@ STR = {
 }
 
 
+STR['ru'].update({
+    'settings':'Настройки', 'save':'Сохранить', 'cancel':'Отмена', 'general':'Основные', 'appearance':'Оформление', 'watchlists':'Котировки',
+    'language':'Язык', 'city':'Город', 'base':'Базовая валюта', 'scale':'Масштаб', 'opacity':'Непрозрачность', 'accent_label':'Акцентный цвет',
+    'clock24_label':'24-часовой формат', 'motion_label':'Минимум движения', 'title1':'Название первого списка', 'title2':'Название второго списка',
+    'working':'Сохранение…', 'loading':'Загрузка…', 'stale':'Данные устарели', 'sync_error':'Ошибка синхронизации',
+    'precip':'Осадки %d%%', 'precip_unknown':'Осадки —', 'previous_page':'Предыдущая страница', 'next_page':'Следующая страница',
+    'list_full':'Лимит списка: 40 инструментов', 'input_error':'Не удалось сохранить. Проверьте данные и повторите.',
+    'saved_no_data':'Инструмент сохранён · источник пока недоступен',
+    'source_error':'Ошибка источника',
+    'invalid_settings':'Проверьте масштаб (0,7–1,3), цвет HEX и базовую валюту.',
+    'google_url':'Секретная ссылка iCal', 'google_help':'Google Календарь: только чтение. Задачи и свои события хранятся на этом компьютере.',
+    'google_invalid':'Нужна ссылка HTTPS из раздела «Интеграция календаря» Google.', 'google_added':'Календарь добавлен',
+    'input_submit':'Добавить', 'quotes_help':'Стрелки перелистывают список. Добавление сохраняет все прежние инструменты. До 40 в каждом списке.',
+    'ui_connect_d1':'Подключите ссылку Google Календаря для чтения событий.', 'ui_connect_d2':'Задачи сохраняются локально.',
+    'ui_not_connected':'Google Календарь не подключён', 'cp_disconnected':'Google Календарь не подключён',
+    'operation_failed':'Не удалось выполнить действие', 'close':'Закрыть', 'invalid_time':'Проверьте время события: например, 18:30 или 6:30pm.',
+})
+STR['en'].update({
+    'settings':'Settings', 'save':'Save', 'cancel':'Cancel', 'general':'General', 'appearance':'Appearance', 'watchlists':'Watchlists',
+    'language':'Language', 'city':'City', 'base':'Base currency', 'scale':'Scale', 'opacity':'Opacity', 'accent_label':'Accent color',
+    'clock24_label':'24-hour clock', 'motion_label':'Reduce motion', 'title1':'First list title', 'title2':'Second list title',
+    'working':'Saving…', 'loading':'Loading…', 'stale':'Data is stale', 'sync_error':'Sync failed',
+    'precip':'Rain %d%%', 'precip_unknown':'Rain —', 'previous_page':'Previous page', 'next_page':'Next page',
+    'list_full':'List limit: 40 instruments', 'input_error':'Could not save. Check the input and try again.',
+    'saved_no_data':'Instrument saved · provider is unavailable',
+    'source_error':'Provider error',
+    'invalid_settings':'Check the scale (0.7–1.3), HEX color and base currency.',
+    'google_url':'Secret iCal URL', 'google_help':'Google Calendar is read-only. Tasks and your own events are stored on this computer.',
+    'google_invalid':'Use an HTTPS URL from Google Calendar → Integrate calendar.', 'google_added':'Calendar added',
+    'input_submit':'Add', 'quotes_help':'Arrows change pages. Adding keeps existing instruments. Up to 40 in each list.',
+    'ui_connect_d1':'Connect a Google Calendar link to read events.', 'ui_connect_d2':'Tasks are stored locally.',
+    'ui_not_connected':'Google Calendar is not connected', 'cp_disconnected':'Google Calendar is not connected',
+    'operation_failed':'Could not complete the action', 'close':'Close', 'invalid_time':'Check the event time: for example 18:30 or 6:30pm.',
+})
+
+
 def tr(key):
     return STR[LANG][key]

@@ -4,7 +4,7 @@ import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-from td_common import SKIN_DIR
+from td_common import SKIN_DIR, COLORS
 
 SS = 4
 FONTS = r"C:\Windows\Fonts"
@@ -211,6 +211,8 @@ def ui(kind, size=48, color=(174, 187, 204, 255)):
     d = ImageDraw.Draw(img)
     k = size * SS / 24.0
     w = int(1.7 * k)
+    accent = tuple(int(COLORS['accent'][i:i+2],16) for i in (1,3,5,7))
+    color = accent
 
     def L(pts):
         pts = [(x * k, y * k) for x, y in pts]
@@ -230,7 +232,7 @@ def ui(kind, size=48, color=(174, 187, 204, 255)):
         d.polygon([(12 * k, 3 * k), (18 * k, 13 * k), (6 * k, 13 * k)], fill=blue)
         d.ellipse([5.5 * k, 8.5 * k, 18.5 * k, 21.5 * k], fill=blue)
     elif kind == "sync":
-        c = (139, 212, 232, 255)
+        c = accent
         d.arc([4 * k, 4 * k, 20 * k, 20 * k], 200, 340, fill=c, width=w)
         d.arc([4 * k, 4 * k, 20 * k, 20 * k], 20, 160, fill=c, width=w)
         d.polygon([(19 * k, 3.5 * k), (19.5 * k, 9.5 * k), (13.5 * k, 8.5 * k)], fill=c)
@@ -240,7 +242,7 @@ def ui(kind, size=48, color=(174, 187, 204, 255)):
         d.line([(12 * k, 5 * k), (12 * k, 19 * k)], fill=c, width=w)
         d.line([(5 * k, 12 * k), (19 * k, 12 * k)], fill=c, width=w)
     elif kind == "plus_blue":
-        c = (120, 170, 255, 255)
+        c = accent
         d.line([(12 * k, 5 * k), (12 * k, 19 * k)], fill=c, width=w)
         d.line([(5 * k, 12 * k), (19 * k, 12 * k)], fill=c, width=w)
     elif kind == "chev_r":
@@ -254,6 +256,11 @@ def ui(kind, size=48, color=(174, 187, 204, 255)):
         d.line([(8 * k, 12 * k), (16 * k, 12 * k)], fill=c, width=w)
     elif kind == "check":
         L([(5, 12.5), (10, 17.5), (19, 7)])
+    elif kind == 'settings':
+        d.ellipse([7*k,7*k,17*k,17*k],outline=color,width=w)
+        for a in range(0,360,45):
+            angle=math.radians(a)
+            L([(12+math.cos(angle)*7,12+math.sin(angle)*7),(12+math.cos(angle)*10,12+math.sin(angle)*10)])
     return finish(img, size)
 
 
@@ -298,7 +305,8 @@ def badge(text, size=64):
 
 def ensure_badge(kind, sym):
     """Создаёт @Resources/icons/<kind>_<sym>.png, если такого значка ещё нет; возвращает имя файла без расширения."""
-    name = "%s_%s" % (kind, sym.lower())
+    import re
+    name = "%s_%s" % (kind, re.sub(r'[^a-z0-9_-]', '_', sym.lower()))
     path = os.path.join(SKIN_DIR, "@Resources", "icons", name + ".png")
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -318,7 +326,7 @@ def build():
     for code in ("btc", "eth", "ton", "other"):
         coin(code, 64).save(os.path.join(out, f"c_{code}.png"))
     Image.new("RGBA", (8, 8), (0, 0, 0, 0)).save(os.path.join(out, "c_none.png"))
-    for kind in ("pin", "wind", "drop", "sync", "plus", "plus_blue", "chev_r", "chev_l", "link", "check"):
+    for kind in ("pin", "wind", "drop", "sync", "plus", "plus_blue", "chev_r", "chev_l", "link", "check", "settings"):
         ui(kind, 48).save(os.path.join(out, f"u_{kind}.png"))
     google_g(96).save(os.path.join(out, "u_google.png"))
     return sorted(os.listdir(out))

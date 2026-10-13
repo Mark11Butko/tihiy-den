@@ -7,7 +7,7 @@ param(
     [ValidateSet('ru','en','')][string]$Lang = '',
     [string]$City = '',
     [string]$FxBase = '',
-    [double]$Scale = 0.9,
+    [double]$Scale = 1.0,
     [string]$AppDir = (Join-Path $env:LOCALAPPDATA 'TihiyDen'),
     [string]$SkinName = 'TihiyDen',
     [switch]$NoAutostart,
@@ -46,7 +46,7 @@ if (-not $rm) {
     winget install -e --id Rainmeter.Rainmeter --accept-package-agreements --accept-source-agreements
     $rm = $rmPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $rm) { throw 'Rainmeter not found after install' }
-    Start-Process $rm; Start-Sleep 6   # first start creates Rainmeter.ini and the Skins folder
+    Start-Process $rm -WindowStyle Hidden; Start-Sleep 6   # first start creates Rainmeter.ini and the Skins folder
 }
 
 # 3. Python packages
@@ -58,14 +58,19 @@ if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
 Say "Copying program to $AppDir"
 New-Item -ItemType Directory -Force $AppDir | Out-Null
 Copy-Item (Join-Path $src '*.py') $AppDir -Force
+Copy-Item (Join-Path $src '*.lua') $AppDir -Force
 Push-Location $AppDir
 try {
     & $py -X utf8 configure.py --lang $Lang --city $City --base $FxBase --scale $Scale --skin-name $SkinName
+    if ($LASTEXITCODE -ne 0) { throw 'Configuration failed; scheduled tasks were not changed' }
     Say 'Building icons and skin'
     & $py -X utf8 build_icons.py
+    if ($LASTEXITCODE -ne 0) { throw 'Icon build failed; scheduled tasks were not changed' }
     & $py -X utf8 build_skin.py
+    if ($LASTEXITCODE -ne 0) { throw 'Skin build failed; scheduled tasks were not changed' }
     Say 'First data fetch'
     & $py -X utf8 engine.py refresh --force
+    if ($LASTEXITCODE -ne 0) { throw 'First refresh failed; scheduled tasks were not changed' }
 } finally { Pop-Location }
 
 # 5. Scheduled tasks
@@ -86,7 +91,7 @@ if (-not $NoAutostart) {
 # 6. Activate the skin
 if (-not $NoLaunch) {
     Say 'Launching widget'
-    if (-not (Get-Process Rainmeter -ErrorAction SilentlyContinue)) { Start-Process $rm; Start-Sleep 5 }
+    if (-not (Get-Process Rainmeter -ErrorAction SilentlyContinue)) { Start-Process $rm -WindowStyle Hidden; Start-Sleep 5 }
     & $rm '!Refresh' | Out-Null
     Start-Sleep 1
     & $rm '!ActivateConfig' $SkinName "$SkinName.ini"

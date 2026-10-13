@@ -10,6 +10,7 @@
 """
 import datetime as dt
 import json
+import math
 import re
 import time
 import urllib.parse
@@ -82,10 +83,12 @@ def fetch_coins(ids, old=None):
     data = {d["id"]: d for d in json.loads(http(url))}
     out = {}
     for cid in ids:
+        if cid not in data: continue
         d = data[cid]
-        sp = d["sparkline_in_7d"]["price"]
+        if not isinstance(d.get('current_price'), (int, float)) or not math.isfinite(d['current_price']): continue
+        sp = [v for v in (d.get('sparkline_in_7d') or {}).get('price', []) if isinstance(v, (int, float)) and math.isfinite(v)]
         prev = (old or {}).get(cid) or {}
-        out[cid] = {"price": d["current_price"], "chg": d.get("price_change_percentage_24h") or 0.0, "s24": sp[-24:], "s7": resample(sp, 56),
+        out[cid] = {"price": d["current_price"], "chg": d.get("price_change_percentage_24h"), "s24": sp[-24:], "s7": resample(sp, 56),
                     "s30": prev.get("s30"), "cur": "USD"}
     return out
 
@@ -115,7 +118,7 @@ def fetch_yahoo(sym):
         d2 = json.loads(http("https://query1.finance.yahoo.com/v8/finance/chart/%s?range=5d&interval=60m" % q))["chart"]["result"][0]
         cl = [c for c in d2["indicators"]["quote"][0]["close"] if c is not None]
         if len(cl) >= 8:
-            out["s7"], out["s24"] = resample(cl, 56), cl[-24:]
+            out["s24"] = cl[-24:]
     except Exception:
         pass
     return out
@@ -191,6 +194,9 @@ def refresh(cfg, store, force=False, now=None):
             try:
                 got = fetch_coins([c["id"] for c in coins], {c["id"]: store.get(item_key(c)) for c in coins})
                 for c in coins:
+                    if c['id'] not in got:
+                        errors[item_key(c)] = 'No data from provider'
+                        continue
                     got[c["id"]]["t"] = now
                     got[c["id"]]["t30"] = (store.get(item_key(c)) or {}).get("t30", 0)
                     store[item_key(c)] = got[c["id"]]

@@ -10,16 +10,19 @@ import os
 import re
 import time
 import urllib.request
+import hashlib
+import urllib.parse
+from td_storage import atomic_write, write_json
 
 import icalendar
 import recurring_ical_events
 
 from i18n import tr
-from td_common import DATA, ROOT
+from td_common import DATA, USER_ROOT
 
-CAL_FILE = os.path.join(ROOT, "calendars.txt")
-TASK_FILE = os.path.join(ROOT, "tasks.txt")
-EVENT_FILE = os.path.join(ROOT, "events.txt")   # свои события: ГГГГ-ММ-ДД|ЧЧ:ММ|ЧЧ:ММ|название
+CAL_FILE = os.path.join(USER_ROOT, "calendars.txt")
+TASK_FILE = os.path.join(USER_ROOT, "tasks.txt")
+EVENT_FILE = os.path.join(USER_ROOT, "events.txt")
 LOCAL_COLOR = "#8BD4E8FF"
 META = os.path.join(DATA, "gmeta.json")
 PALETTE = ["#8ACBFFFF", "#E8C487FF", "#91D6B1FF", "#F0A5A5FF", "#C3B1F0FF"]
@@ -40,12 +43,24 @@ def calendars():
                 continue
             parts = line.split()
             url = parts[0]
-            if not url.startswith("http"):
+            if not valid_calendar_url(url):
                 continue
             color = next((p for p in parts[1:] if re.fullmatch(r"#[0-9A-Fa-f]{6}", p)), None)
             name = " ".join(p for p in parts[1:] if p != color)
             out.append({"url": url, "color": (color + "FF") if color else PALETTE[len(out) % len(PALETTE)], "name": name or tr("cal_name") % (len(out) + 1)})
     return out
+
+
+def valid_calendar_url(url):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        return parsed.scheme == 'https' and parsed.hostname == 'calendar.google.com' and '/calendar/ical/' in parsed.path and parsed.path.endswith('.ics') and not parsed.username and not parsed.password
+    except ValueError:
+        return False
+
+
+def cache_path(url):
+    return os.path.join(DATA, 'ics_' + hashlib.sha256(url.encode()).hexdigest()[:24] + '.ics')
 
 
 def _load_meta():
@@ -67,31 +82,32 @@ def sync(force=False):
     if not force and meta.get("n") == len(cals) and meta.get("urls") == [c["url"] for c in cals] and now - meta.get("t", 0) < EVERY and meta.get("ok"):
         return meta
     ok = 0
+    errors = []
     for i, c in enumerate(cals):
+        legacy = os.path.join(DATA, 'ics_%d.ics' % i)
+        old_urls = meta.get('urls', [])
+        if not os.path.exists(cache_path(c['url'])) and i < len(old_urls) and old_urls[i] == c['url'] and os.path.exists(legacy):
+            with open(legacy, 'rb') as f: atomic_write(cache_path(c['url']), f.read(), binary=True)
         try:
             req = urllib.request.Request(c["url"], headers={"User-Agent": "TihiyDen/1.0"})
             with urllib.request.urlopen(req, timeout=20) as r:
                 data = r.read()
             icalendar.Calendar.from_ical(data)  # проверка
-            with open(os.path.join(DATA, "ics_%d.ics" % i), "wb") as f:
-                f.write(data)
+            atomic_write(cache_path(c['url']), data, binary=True)
             ok += 1
         except Exception as e:
-            meta["err"] = str(e)[:80]
-    if ok:
+            errors.append(type(e).__name__)
+    if ok == len(cals):
         meta.update({"ok": True, "t": now, "n": len(cals), "urls": [c["url"] for c in cals], "synced": dt.datetime.now().strftime("%H:%M")})
         meta.pop("err", None)
     else:
-        meta.update({"ok": False, "n": len(cals)})
+        meta.update({"ok": False, "n": len(cals), "err": ', '.join(sorted(set(errors))), 'urls': [c['url'] for c in cals]})
     _save_meta(meta)
     return meta
 
 
 def _save_meta(meta):
-    tmp = META + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False)
-    os.replace(tmp, META)
+    write_json(META, meta)
 
 
 def _local(d):
@@ -112,7 +128,7 @@ def month_events(y, m):
     end = dt.datetime.combine(last, dt.time.min, tzinfo=tz)
     days = {}
     for i, c in enumerate(cals):
-        path = os.path.join(DATA, "ics_%d.ics" % i)
+        path = cache_path(c['url'])
         if not os.path.exists(path):
             continue
         try:
@@ -131,7 +147,7 @@ def month_events(y, m):
             allday = not isinstance(s, dt.datetime)
             s_l, e_l = _local(s), _local(e)
             d0 = s_l if allday else s_l.date()
-            d1 = (e_l - dt.timedelta(days=1)) if allday else (e_l.date() if e_l > s_l else s_l.date())
+            d1 = (e_l - dt.timedelta(days=1)) if allday else ((e_l - dt.timedelta(microseconds=1)).date() if e_l > s_l else s_l.date())
             if isinstance(d0, dt.datetime):
                 d0 = d0.date()
             if isinstance(d1, dt.datetime):
@@ -172,9 +188,7 @@ def tasks():
 
 
 def _write_tasks(ts):
-    with open(TASK_FILE, "w", encoding="utf-8") as f:
-        for t in ts:
-            f.write(("x " if t["done"] else "") + t["title"] + "\n")
+    atomic_write(TASK_FILE, ''.join(('x ' if t['done'] else '') + t['title'].replace('\n', ' ').replace('\r', ' ') + '\n' for t in ts))
 
 
 def add_task(title):
@@ -208,10 +222,7 @@ def _read_local():
 
 
 def _write_local(rows):
-    with open(EVENT_FILE, "w", encoding="utf-8") as f:
-        for p in rows:
-            if p:
-                f.write("|".join(p) + "\n")
+    atomic_write(EVENT_FILE, ''.join('|'.join(p) + '\n' for p in rows if p))
 
 
 def add_local_event(day, start, end, title):
@@ -245,8 +256,13 @@ def local_events(y, m):
         st, en, title = p[1], p[2], p[3]
         if st:
             label = st + ((" – " + en) if en else "")
-            start_iso = dt.datetime.combine(d, dt.time.fromisoformat(st)).isoformat()
-            end_iso = dt.datetime.combine(d, dt.time.fromisoformat(en)).isoformat() if en else None
+            try:
+                start_dt = dt.datetime.combine(d, dt.time.fromisoformat(st))
+                end_dt = dt.datetime.combine(d, dt.time.fromisoformat(en)) if en else None
+                if end_dt and end_dt <= start_dt: end_dt += dt.timedelta(days=1)
+                start_iso, end_iso = start_dt.isoformat(), end_dt.isoformat() if end_dt else None
+            except ValueError:
+                continue
             item = {"sort": st, "time": label, "title": title, "color": LOCAL_COLOR, "start": start_iso, "end": end_iso, "lid": lid}
         else:
             item = {"sort": "0", "time": tr("all_day"), "title": title, "color": LOCAL_COLOR, "start": None, "end": None, "lid": lid}
@@ -258,16 +274,14 @@ def toggle_task(i):
     ts = tasks()
     if 0 <= i < len(ts):
         ts[i]["done"] = not ts[i]["done"]
-        with open(TASK_FILE, "w", encoding="utf-8") as f:
-            for t in ts:
-                f.write(("x " if t["done"] else "") + t["title"] + "\n")
+        _write_tasks(ts)
 
 
 def view(y, m, sel):
     """Данные для отрисовки: connected, synced, events выбранного дня, цвета точек по дням, задачи."""
     meta = _load_meta()
-    connected = bool(meta.get("ok"))
-    res = {"connected": connected, "synced": meta.get("synced"), "events": [], "days": {}, "tasks": tasks(), "err": meta.get("err")}
+    connected = bool(calendars())
+    res = {"connected": connected, "synced": meta.get("synced"), "events": [], "days": {}, "tasks": tasks(), "err": meta.get("err"), 'updatedAt': meta.get('t')}
     days = month_events(y, m)
     for d, evs in days.items():
         seen = []

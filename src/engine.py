@@ -16,11 +16,20 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
+# Generated skins carry explicit storage paths, including isolated test skins.
+for _flag, _env in (('--data-dir','TD_DATA_DIR'),('--user-dir','TD_USER_DIR'),('--skin-dir','TD_SKIN_DIR')):
+    if _flag in sys.argv:
+        _idx = sys.argv.index(_flag)
+        if _idx + 1 >= len(sys.argv): raise ValueError('Missing storage path')
+        os.environ[_env] = os.path.abspath(sys.argv[_idx + 1])
+        del sys.argv[_idx:_idx + 2]
+
 import google as gcal
 import markets
 from i18n import LANG, tr
 from td_common import CFG, COLORS, DATA, RAINMETER, NC, NE, NF, NT, chunks, geo_keys, hex_rgba, load_config, save_config, text_keys
-from td_layout import CW, RH, S, SPARK_H, SPARK_W, TILE_SPARK_H, TILE_SPARK_W
+from td_layout import CW, RH, S, SPARK_H, SPARK_W, TILE_SPARK_H, TILE_SPARK_W, CHART_W, CHART_H
+from td_storage import FileLock, write_json, atomic_write
 
 CACHE = os.path.join(DATA, "cache.json")
 STATE = os.path.join(DATA, "state.json")
@@ -39,7 +48,8 @@ EN = "–"
 def load_json(path, default):
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            value = json.load(f)
+            return value if isinstance(value, type(default)) else json.loads(json.dumps(default))
     except Exception:
         return json.loads(json.dumps(default))
 
@@ -47,38 +57,12 @@ def load_json(path, default):
 LOCK = os.path.join(DATA, "state.lock")
 
 
-class state_lock:
-    """Простой файловый замок: клики запускают отдельные процессы engine.py, они не должны затирать state.json друг у друга."""
-
-    def __enter__(self):
-        t0 = time.time()
-        while True:
-            try:
-                self.fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                return self
-            except FileExistsError:
-                if time.time() - t0 > 5:  # замок завис (процесс убит) — снимаем
-                    try:
-                        os.remove(LOCK)
-                    except OSError:
-                        pass
-                time.sleep(0.03)
-            except OSError:
-                time.sleep(0.03)
-
-    def __exit__(self, *a):
-        try:
-            os.close(self.fd)
-            os.remove(LOCK)
-        except OSError:
-            pass
+class state_lock(FileLock):
+    def __init__(self): super().__init__(LOCK, timeout=10)
 
 
 def save_json(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    write_json(path, obj)
 
 
 def get(url, timeout=15):
@@ -120,12 +104,12 @@ def fetch_weather_openmeteo(cfg):
     times = j["hourly"]["time"]
     idx = next((i for i, t in enumerate(times) if t[:13] >= now_h), 0)
     hourly = [{"time": times[i], "temp": j["hourly"]["temperature_2m"][i], "icon": weather_icon(j["hourly"]["weather_code"][i])}
-              for i in range(idx + 1, idx + 7)]
+              for i in range(idx + 1, min(idx + 7, len(times)))]
     daily = [{"date": j["daily"]["time"][i], "min": j["daily"]["temperature_2m_min"][i], "max": j["daily"]["temperature_2m_max"][i],
               "icon": weather_icon(j["daily"]["weather_code"][i])} for i in range(5)]
     return {"t": time.time(), "temp": cur["temperature_2m"], "feels": cur["apparent_temperature"], "icon": weather_icon(cur["weather_code"]),
             "wind": cur["wind_speed_10m"], "dir": cur.get("wind_direction_10m"), "hum": cur.get("relative_humidity_2m"),
-            "hourly": hourly, "daily": daily}
+            "hourly": hourly, "daily": daily, "precip": j["hourly"]["precipitation_probability"][idx]}
 
 
 def metno_icon(code):
@@ -197,7 +181,7 @@ def geocode(query, lang):
     return {"label": r["name"], "lat": r["latitude"], "lon": r["longitude"], "tz": r.get("timezone"), "country": r.get("country", "")}
 
 
-def refresh_data(force=False):
+def _refresh_data(force=False):
     cfg = load_config()
     cache = load_json(CACHE, {})
     now = time.time()
@@ -209,25 +193,41 @@ def refresh_data(force=False):
     try:
         if due("weather", cfg["weather_every"]):
             cache["weather"] = fetch_weather(cfg)
+            cache.pop("err_weather", None)
     except Exception as e:
-        online = False
-        cache["err_weather"] = str(e)[:100]
+        cache["err_weather"] = type(e).__name__
     try:
         items = cache.setdefault("items", {})
         errs = markets.refresh(cfg, items, force=force, now=now)
         cache["err_items"] = errs
-        if errs and all(k.startswith(("coin", "coins")) for k in errs):
-            online = False
+        # Provider errors are not evidence that the computer is offline.
     except Exception as e:
         cache["err_items"] = {"all": str(e)[:100]}
     try:
-        gcal.sync(force=force)
+        meta = gcal.sync(force=force)
+        cache["err_google"] = meta.get("err")
     except Exception as e:
-        cache["err_google"] = str(e)[:100]
-    cache["online"] = online
+        cache["err_google"] = type(e).__name__
+    cache["online"] = network_available()
     cache["checked"] = now
     save_json(CACHE, cache)
     return cache
+
+
+def network_available():
+    # OS network state, separate from an API outage/rate limit; no extra network request.
+    if os.name == 'nt':
+        try:
+            import ctypes
+            flags = ctypes.c_ulong()
+            return bool(ctypes.windll.wininet.InternetGetConnectedState(ctypes.byref(flags), 0))
+        except (AttributeError, OSError): pass
+    return True
+
+
+def refresh_data(force=False):
+    with FileLock(os.path.join(DATA, 'refresh.lock'), timeout=1):
+        return _refresh_data(force)
 
 
 # ---------------------------------------------------------------- форматирование
@@ -262,8 +262,8 @@ def fmt_price(p):
     if p is None:
         return "—"
     if p >= 1000:
-        n = f"{int(round(p)):,}"
-        return n.replace(",", NBSP) if LANG == "ru" else n
+        n = f"{p:,.0f}" if p == int(p) else f"{p:,.2f}"
+        return dec(n.replace(",", NBSP)) if LANG == "ru" else n
     if p >= 1:
         return dec("%.2f" % p)
     return dec("%.6g" % p)
@@ -368,20 +368,20 @@ def item_label(it, base):
 def item_text(it, d, base):
     """(метка, цена, изменение) строки списка; пустая цена — «—», если данных пока нет."""
     label = item_label(it, base)
-    if not d:
+    if not d or not isinstance(d.get('price'), (int, float)) or not __import__('math').isfinite(d['price']) or (it['k']=='fx' and d.get('cur') != base):
         return label, "—", ""
     price = fmt_rate(d["price"]) if it["k"] == "fx" else money(d["price"], d.get("cur", "USD"))
-    return label, price, fmt_change(d["chg"])
+    return label, price, fmt_change(d.get("chg"))
 
 
 def item_series(d, period=None):
     """Ряд для графика: запрошенный период, а если его нет у этого актива — лучший из имеющихся."""
     if not d:
         return None
-    order = {"24h": ("s24", "s7", "s30"), "7d": ("s7", "s30", "s24"), "30d": ("s30", "s7", "s24")}.get(period or "7d", ("s7", "s30", "s24"))
+    order = {"24h": ("s24",), "7d": ("s7",), "30d": ("s30",)}.get(period or "7d", ("s7",))
     for k in order:
         if d.get(k):
-            return d[k]
+            return [v for v in d[k] if isinstance(v, (int, float)) and __import__("math").isfinite(v)] or None
     return None
 
 
@@ -466,6 +466,19 @@ def demo_google(y, m, sel):
 
 # ---------------------------------------------------------------- отрисовка в файлы
 def render():
+    with FileLock(os.path.join(DATA, 'render.lock'), timeout=10):
+        return _render()
+
+
+def page_slice(rows, state, key, count):
+    pages = max(1, (len(rows) + count - 1) // count)
+    try: page = max(0, int(state.get(key, 0))) % pages
+    except (ValueError, TypeError): page = 0
+    offset = page * count
+    return rows[offset:offset + count], offset, f'{page + 1}/{pages}' if pages > 1 else ''
+
+
+def _render():
     cfg = load_config()
     state = load_json(STATE, DEFAULT_STATE)
     cache = demo_cache(cfg) if DEMO else load_json(CACHE, {})
@@ -481,14 +494,18 @@ def render():
 
     # --- погода
     w = cache.get("weather")
+    if not isinstance(w, dict) or any(not isinstance(w.get(k), (int, float)) for k in ('temp','feels','wind')):
+        w = None
+    elif w:
+        w = {**w, 'hourly':w.get('hourly') or [], 'daily':w.get('daily') or [], 'icon':w.get('icon','cloud')}
     T["w.loc"] = cfg.get("label", "")
     for k in ["ic.cur"] + [f"ic.h{i}" for i in range(6)] + [f"ic.d{i}" for i in range(5)]:
         G[k] = "w_none"
     if w:
         T["w.temp"] = fmt_temp(w["temp"])
         T["w.feels"] = tr("feels") % fmt_temp(w["feels"])
-        d0 = w["daily"][0]
-        T["w.hi"], T["w.lo"] = fmt_temp(d0["max"]), fmt_temp(d0["min"])
+        d0 = (w.get("daily") or [{}])[0]
+        T["w.hi"], T["w.lo"] = fmt_temp(d0.get("max")), fmt_temp(d0.get("min"))
         compass = COMPASS[int(round((w.get("dir") or 0) / 45.0)) % 8] if w.get("dir") is not None else ""
         T["w.wind"] = ("%d %s %s" % (round(w["wind"]), tr("ms"), compass)).rstrip()
         T["w.hum"] = "%d%%" % w["hum"] if w.get("hum") is not None else "—"
@@ -507,10 +524,22 @@ def render():
     else:
         T["w.temp"], T["w.wind"], T["w.feels"] = "—", "—", tr("no_weather")
 
+    probability = w.get('precip') if w else None
+    T['w.precip'] = tr('precip') % round(probability) if probability is not None else tr('precip_unknown')
+    T['w.summary'] = ' · '.join([T['w.temp'], T['w.loc'], T['w.wind']])
+    if w and time.time() - w.get('t', 0) > cfg['weather_every'] * 2:
+        T['w.loc'] = tr('stale') + ' · ' + T['w.loc']
+    elif cache.get('err_weather'):
+        T['w.loc'] = tr('source_error')
+    elif not cache.get('online', True):
+        T['w.loc'] = tr('offline')
+
     # --- календарь
-    m = state.get("month") or today.month
-    y = state.get("year") or today.year
-    sel = dt.date.fromisoformat(state["selected"]) if state.get("selected") else today
+    try:
+        m, y = int(state.get('month') or today.month), int(state.get('year') or today.year)
+        if not 1 <= m <= 12 or not 1 <= y <= 9998: raise ValueError('date')
+        sel = dt.date.fromisoformat(state['selected']) if state.get('selected') else today
+    except (ValueError, TypeError): m, y, sel = today.month, today.year, today
     T["cal.title"] = tr("month_title").format(m=MONTHS[m - 1], y=y)
     first_wd, ndays = pycal.monthrange(y, m)
     prev_last = (dt.date(y, m, 1) - dt.timedelta(days=1)).day
@@ -527,7 +556,7 @@ def render():
                 G["today"] = "Ellipse %s,%s,%s | Fill Color 0,0,0,0 | StrokeWidth 1 | Stroke Color %s" % (cx, cy, S(13), rgba("accent"))
             if d == sel:
                 G["sel"] = "Ellipse %s,%s,%s | Fill Color %s | StrokeWidth 0" % (cx, cy, S(13), rgba("blue"))
-                G[f"cc{i}"] = rgba("text")
+                G[f"cc{i}"] = rgba("background")
         else:
             T[f"c{i}"] = str(prev_last + day) if day < 1 else str(day - ndays)
             G[f"cc{i}"] = rgba("textFaint")
@@ -563,11 +592,20 @@ def render():
         T["cal.sync"] = tr("synced") % google["synced"]
     elif not connected:
         T["cal.sync"] = tr("connect_google")
-    G["stale"] = rgba("warning") if not online else rgba("accent")
+    if online and google.get('err'):
+        T['cal.sync'] = tr('sync_error')
+    elif online and connected and google.get('updatedAt') and time.time() - google['updatedAt'] > 900:
+        T['cal.sync'] = tr('stale')
+    G["stale"] = rgba("warning") if not online or google.get('err') else rgba("textDim")
+    T['cal.state'] = T['cal.sync']
+    T['status'] = tr('offline') if not online else ''
 
     # --- повестка
     events = google.get("events", [])
+    all_events = events
     tasks = google.get("tasks", [])
+    events, event_offset, T['ag.page'] = page_slice(events, state, 'event_page', NE)
+    tasks, task_offset, T['tk.page'] = page_slice(tasks, state, 'task_page', NT)
     typing = inp in ("task", "event")
     if typing:
         T["ag.title"] = tr("in_" + inp)
@@ -606,22 +644,32 @@ def render():
         if has:
             G[f"chk{i}a"] = ("Rectangle 0.5,0.5,%s,%s,%s | Fill Color %s | StrokeWidth 0" % (sz - 1, sz - 1, S(4), rgba("blue"))) if done else \
                 ("Rectangle 0.5,0.5,%s,%s,%s | Fill Color 0,0,0,0 | StrokeWidth 1 | Stroke Color %s" % (sz - 1, sz - 1, S(4), rgba("textDim", 0.8)))
-            G[f"chk{i}b"] = ("Path P | Fill Color 0,0,0,0 | StrokeWidth 1.6 | Stroke Color 255,255,255,255") if done else NONE_SHAPE
+            G[f"chk{i}b"] = ("Path P | Fill Color 0,0,0,0 | StrokeWidth 1.6 | Stroke Color " + rgba('background')) if done else NONE_SHAPE
         else:
             G[f"chk{i}a"] = G[f"chk{i}b"] = NONE_SHAPE
-    T["status"] = ""
+    # Keep the source status from the calendar block.
     T["tk.empty"] = tr("no_tasks") if not tasks else ""
 
     # --- списки котировок (две карточки по 3 строки): валюты / золото / нефть / крипта / акции — что выбрал пользователь
-    store = cache.get("items") or {}
+    store = {key:value for key,value in (cache.get('items') or {}).items() if isinstance(value, dict) and isinstance(value.get('price'), (int,float)) and __import__('math').isfinite(value['price'])}
     base = cfg.get("fx_base", "RUB")
+    store = {key:value for key,value in store.items() if not key.startswith('fx:') or value.get('cur') == base}
     lists = cfg.get("lists") or [[], []]
     while len(lists) < 2:
         lists.append([])
     T["fx.title"], T["cr.title"] = titles(cfg)
     for L, (pf, kk) in enumerate((("fx", "fx"), ("cr", "c"))):
-        for i in range(3):
-            it = lists[L][i] if i < len(lists[L]) else None
+        visible, offset, counter = page_slice(lists[L], state, f'list_page_{L}', NF)
+        T['fx.page' if L == 0 else 'cr.page'] = counter
+        if not online:
+            T[pf+'.title'] = tr('offline')
+        elif any(markets.item_key(it) in cache.get('err_items', {}) or (it['k']=='coin' and 'coins' in cache.get('err_items', {})) for it in visible):
+            T[pf+'.title'] = tr('source_error')
+        elif any(markets.item_key(it) in store and time.time()-store[markets.item_key(it)].get('t',0) > markets.EVERY[it['k']]*2 for it in visible):
+            T[pf+'.title'] = tr('stale')
+        for i in range(NF):
+            it = visible[i] if i < len(visible) else None
+            G[f'hid.{pf}{i}'] = '0' if it else '1'
             d = store.get(markets.item_key(it)) if it else None
             G[("fl.fx%d" if L == 0 else "lg.c%d") % i] = item_icon(it) if it else ("f_none" if L == 0 else "c_none")
             lab, pr, chg = item_text(it, d, base) if it else ("", "", "")
@@ -629,7 +677,7 @@ def render():
                 T[f"fx{i}.p"], T[f"fx{i}.r"], T[f"fx{i}.c"] = lab, pr, chg
             else:
                 T[f"cr{i}.s"], T[f"cr{i}.p"], T[f"cr{i}.c"] = lab, pr, chg
-            ch = trend_hex(d["chg"]) if d else COLORS["textDim"]
+            ch = trend_hex(d.get("chg")) if d else COLORS["textDim"]
             line, area = spark_paths(item_series(d, "7d") if d else [], SPARK_W, SPARK_H)
             G[f"sp.{kk}{i}.l" if L else f"sp.fx{i}.l"], G[f"sp.{kk}{i}.a" if L else f"sp.fx{i}.a"] = line, area
             G[f"col.{kk}{i}" if L else f"col.fx{i}"], G[f"cola.{kk}{i}" if L else f"cola.fx{i}"] = hex_rgba(ch), hex_rgba(ch, 0.14)
@@ -647,8 +695,8 @@ def render():
     cl, cr_i = 1, 0
     try:
         cl, cr_i = (int(x) for x in str(state.get("chart", "1:0")).split(":"))
-    except ValueError:
-        pass
+        if cl not in (0, 1) or cr_i < 0: cl, cr_i = 1, 0
+    except (ValueError, TypeError): cl, cr_i = 1, 0
     cit = lists[cl][cr_i] if cl < len(lists) and cr_i < len(lists[cl]) else None
     d = store.get(markets.item_key(cit)) if cit else None
     per = state.get("period", "7d")
@@ -661,10 +709,16 @@ def render():
     cprice = (lambda v: fmt_rate(v) if cit["k"] == "fx" else money(v, d.get("cur", "USD"))) if (cit and d) else None
     T["ch.title"] = "%s · %s" % (item_label(cit, base), cprice(d["price"])) if cprice else (item_label(cit, base) if cit else "")
     series = item_series(d, per)
+    G['ch.pill'] = 'Rectangle 0,0,%s,%s,%s | Fill Color %s | StrokeWidth 1 | Stroke Color %s' % (S(56), S(24), S(8), rgba('surface'), rgba('accent'))
+    G['ch.pillx'] = str(S(('24h','7d','30d').index(per) * 64) if per in ('24h','7d','30d') else 0)
+    T['ch.status'] = tr('no_data') if not series else (tr('stale') if d and time.time() - d.get('t', 0) > markets.EVERY.get(cit['k'], 300) * 2 else '')
+    if not online: T['ch.status'] = tr('offline')
     if d and series:
-        CW_, CH_ = 344, 240
+        CW_, CH_ = CHART_W, CHART_H
+        series = list(series)
+        series[-1] = d["price"]
         lo, hi = min(min(series), d["price"]), max(max(series), d["price"])
-        pad = (hi - lo) * 0.08 or hi * 0.01
+        pad = (hi - lo) * 0.08 or abs(hi) * 0.01 or 1.0
         lo2, hi2 = lo - pad, hi + pad
         pts = []
         n_ = len(series)
@@ -688,7 +742,7 @@ def render():
     # --- компактный режим
     upcoming = []
     try:
-        today_ev = events if sel == today else (demo_google if DEMO else (lambda y, m, d: gcal.view(y, m, d)))(today.year, today.month, today)["events"]
+        today_ev = all_events if sel == today else (demo_google if DEMO else (lambda y, m, d: gcal.view(y, m, d)))(today.year, today.month, today)["events"]
         for e in today_ev:
             if e.get("start"):
                 st = dt.datetime.fromisoformat(e["start"])
@@ -718,7 +772,7 @@ def render():
             lab, pr, chg = item_text(it, d, base)
             T[f"cp.f{i}.p"], T[f"cp.f{i}.r"], T[f"cp.f{i}.c"] = lab, pr, chg
             line, area = spark_paths(item_series(d, "7d"), TILE_SPARK_W, TILE_SPARK_H)
-            ch = trend_hex(d["chg"])
+            ch = trend_hex(d.get("chg"))
         else:
             line, area = spark_paths([], TILE_SPARK_W, TILE_SPARK_H)
             ch = COLORS["textDim"]
@@ -734,15 +788,18 @@ def render():
     G["hid.ex"] = H1(compact)
     G["hid.cal"] = H1(compact)
     G["hid.sync"] = H1(compact)
-    G["hid.ag"] = H1(compact or chart)
+    G["hid.ag"] = H1(compact)
     G["hid.go"] = "1"
     G["hid.lists"] = H1(compact or chart)
+    for L, pf in enumerate(('fx', 'cr')):
+        visible, _, _ = page_slice(lists[L], state, f'list_page_{L}', NF)
+        for i in range(NF): G[f'hid.{pf}{i}'] = H1(compact or chart or i >= len(visible))
     G["hid.ch"] = H1(not chart)
     G["hid.k"] = H1(not compact)
     G["hid.kev"] = H1(not (compact and upcoming))
     G["hid.kempty"] = H1(not (compact and not upcoming))
     G["hid.kgo"] = "1"
-    ag_off = compact or chart
+    ag_off = compact
     G["hid.btn"] = H1(ag_off or typing)
     G["hid.inag"] = H1(ag_off or not typing)
     G["hid.fxadd"] = H1(compact or chart or inp in ("add0", "add1"))
@@ -759,7 +816,10 @@ def render():
     write_chunks("geo", geo_keys(), G)
     with state_lock():
         st = load_json(STATE, DEFAULT_STATE)
-        st["evmap"] = evmap
+        if all(st.get(key) == state.get(key) for key in ('month','year','selected','event_page')):
+            st['evmap'] = evmap
+        st['task_count'] = len(google.get('tasks', []))
+        st['event_count'] = len(google.get('events', []))
         save_json(STATE, st)
 
 
@@ -767,10 +827,7 @@ def write_chunks(prefix, keys, values):
     for n, ks in enumerate(chunks(keys)):
         lines = [str(values.get(k, "")).replace("\r", "").replace("\n", " ") for k in ks]
         path = os.path.join(DATA, "%s%d.txt" % (prefix, n))
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(lines) + "\n")
-        os.replace(tmp, path)
+        atomic_write(path, "\n".join(lines) + "\n")
 
 
 # ---------------------------------------------------------------- действия
@@ -789,83 +846,112 @@ def act(name, arg=None):
         time.sleep(1.5)
         if not load_json(STATE, DEFAULT_STATE).get("input"):
             return
-    lock = state_lock()
-    lock.__enter__()
-    state = load_json(STATE, DEFAULT_STATE)
-    today = dt.date.today()
-    if name == "mode":
-        state["mode"] = "compact" if state["mode"] == "expanded" else "expanded"
-        state["chartOpen"] = False
-    elif name == "month":
-        m = (state.get("month") or today.month) + int(arg)
-        y = state.get("year") or today.year
-        if m < 1:
-            m, y = 12, y - 1
-        if m > 12:
-            m, y = 1, y + 1
-        state["month"], state["year"] = m, y
-    elif name == "date":
-        m = state.get("month") or today.month
-        y = state.get("year") or today.year
-        first_wd, ndays = pycal.monthrange(y, m)
-        day = int(arg) - first_wd + 1
-        if 1 <= day <= ndays:
-            state["selected"] = dt.date(y, m, day).isoformat()
-    elif name == "today":
-        state["month"] = state["year"] = state["selected"] = None
-    elif name == "chart":
-        state["chartOpen"] = True
-        state["chart"] = arg
-        state["period"] = "7d"
-    elif name == "rm":
-        cfg_ = load_config()
-        li, ri = (int(x) for x in arg.split(":"))
-        if li < len(cfg_["lists"]) and ri < len(cfg_["lists"][li]):
-            del cfg_["lists"][li][ri]
-            save_config(cfg_)
-            refresh_data()
-    elif name == "chartclose":
-        state["chartOpen"] = False
-    elif name == "period":
-        state["period"] = arg
-    elif name == "retry":
-        refresh_data(force=True)
-    elif name == "connect":
-        gcal.calendars()
-        subprocess.Popen(["notepad.exe", gcal.CAL_FILE])
-    elif name == "task":
-        gcal.toggle_task(int(arg))
-    elif name == "taskadd":
-        if not os.path.exists(gcal.TASK_FILE):
-            with open(gcal.TASK_FILE, "w", encoding="utf-8") as f:
-                f.write(tr("task_example"))
-        subprocess.Popen(["notepad.exe", gcal.TASK_FILE])
-    elif name == "cfg":
-        subprocess.Popen(["notepad.exe", CONFIG])
-    elif name == "inputon":
-        if time.time() - state.get("input_done", 0) > 2.0:  # запоздавший inputon после быстрого Enter не должен открывать режим заново
-            state["input"] = arg
-            state.pop("toast", None)
-    elif name == "inputoff":
-        state["input"] = None
-    elif name == "tkdel":
-        gcal.delete_task(int(arg))
-    elif name == "evdel":
-        evmap = state.get("evmap") or []
-        i = int(arg)
-        if i < len(evmap) and evmap[i] >= 0:
-            gcal.delete_local_event(evmap[i])
-    elif name == "gclick":
-        meta = load_json(gcal.META, {})
-        if meta.get("ok"):
-            gcal.sync(force=True)
+    if name in ('retry', 'gclick'):
+        if name == 'gclick' and not gcal.calendars():
+            launch_settings('google')
         else:
+            refresh_data(force=True)
+        render(); poke(); return
+    if name in ('cfg', 'connect', 'input'):
+        launch_settings('google' if name == 'connect' else arg if name == 'input' else None)
+        return
+    with state_lock():
+        state = load_json(STATE, DEFAULT_STATE)
+        today = dt.date.today()
+        if name == "mode":
+            state["mode"] = "compact" if state["mode"] == "expanded" else "expanded"
+            state["chartOpen"] = False
+        elif name == "month":
+            m = (state.get("month") or today.month) + int(arg)
+            y = state.get("year") or today.year
+            if m < 1:
+                m, y = 12, y - 1
+            if m > 12:
+                m, y = 1, y + 1
+            state["month"], state["year"] = m, y
+        elif name == "date":
+            m = state.get("month") or today.month
+            y = state.get("year") or today.year
+            first_wd, ndays = pycal.monthrange(y, m)
+            day = int(arg) - first_wd + 1
+            if 1 <= day <= ndays:
+                state["selected"] = dt.date(y, m, day).isoformat()
+        elif name == "today":
+            state["month"] = state["year"] = state["selected"] = None
+        elif name == 'page':
+            key, direction = str(arg).split(':')
+            if key not in ('event_page', 'task_page', 'list_page_0', 'list_page_1'): raise ValueError('page')
+            if key.startswith('list_page_'): count, size = len(load_config()['lists'][int(key[-1])]), NF
+            else: count, size = state.get('event_count' if key == 'event_page' else 'task_count', 0), NE if key == 'event_page' else NT
+            pages = max(1, (count + size - 1) // size)
+            state[key] = (int(state.get(key, 0)) + int(direction)) % pages
+        elif name == "chart":
+            li, ri = (int(x) for x in str(arg).split(':'))
+            if li not in (0, 1) or ri < 0 or ri >= NF: raise ValueError('chart row')
+            cfg_ = load_config()
+            _, offset, _ = page_slice(cfg_['lists'][li], state, f'list_page_{li}', NF)
+            if ri + offset >= len(cfg_['lists'][li]): return
+            state["chartOpen"] = True
+            state["chart"] = f'{li}:{ri + offset}'
+            state["period"] = "7d"
+        elif name == "rm":
+            cfg_ = load_config()
+            li, ri = (int(x) for x in arg.split(":"))
+            if li in (0, 1) and 0 <= ri < NF:
+                _, offset, _ = page_slice(cfg_['lists'][li], state, f'list_page_{li}', NF)
+                if ri + offset < len(cfg_['lists'][li]):
+                    del cfg_['lists'][li][ri + offset]
+                    save_config(cfg_)
+        elif name == "chartclose":
+            state["chartOpen"] = False
+        elif name == "period":
+            if arg not in ("24h", "7d", "30d"): raise ValueError("period")
+            state["period"] = arg
+        elif name == "retry":
+            refresh_data(force=True)
+        elif name == "connect":
             gcal.calendars()
             subprocess.Popen(["notepad.exe", gcal.CAL_FILE])
-    save_json(STATE, state)
-    lock.__exit__()
+        elif name == "task":
+            _, offset, _ = page_slice(gcal.tasks(), state, "task_page", NT)
+            if 0 <= int(arg) < NT: gcal.toggle_task(int(arg) + offset)
+        elif name == "taskadd":
+            if not os.path.exists(gcal.TASK_FILE):
+                with open(gcal.TASK_FILE, "w", encoding="utf-8") as f:
+                    f.write(tr("task_example"))
+            subprocess.Popen(["notepad.exe", gcal.TASK_FILE])
+        elif name == "cfg":
+            subprocess.Popen(["notepad.exe", CONFIG])
+        elif name == "inputon":
+            if time.time() - state.get("input_done", 0) > 2.0:  # запоздавший inputon после быстрого Enter не должен открывать режим заново
+                state["input"] = arg
+                state.pop("toast", None)
+        elif name == "inputoff":
+            state["input"] = None
+        elif name == "tkdel":
+            _, offset, _ = page_slice(gcal.tasks(), state, "task_page", NT)
+            if 0 <= int(arg) < NT: gcal.delete_task(int(arg) + offset)
+        elif name == "evdel":
+            evmap = state.get("evmap") or []
+            i = int(arg)
+            if 0 <= i < len(evmap) and evmap[i] >= 0:
+                gcal.delete_local_event(evmap[i])
+        elif name == "gclick":
+            meta = load_json(gcal.META, {})
+            if meta.get("ok"):
+                gcal.sync(force=True)
+            else:
+                gcal.calendars()
+                subprocess.Popen(["notepad.exe", gcal.CAL_FILE])
+        save_json(STATE, state)
     render()
     poke()
+
+
+def launch_settings(kind=None):
+    args = [sys.executable, os.path.join(os.path.dirname(__file__), 'settings.py')]
+    if kind: args += ['--input', kind]
+    subprocess.Popen(args, creationflags=0x08000000 if os.name == 'nt' else 0)
 
 
 TIME_RE = r"(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?"
@@ -877,6 +963,7 @@ def _parse_clock(txt):
     if not m or (m.group(2) is None and m.group(3) is None):
         return None
     h, mi, ap = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if ap and not 1 <= h <= 12: return None
     if ap == "pm" and h < 12:
         h += 12
     if ap == "am" and h == 12:
@@ -887,6 +974,8 @@ def _parse_clock(txt):
 def parse_event(text):
     """'18:30-19:45 Встреча' -> ('18:30', '19:45', 'Встреча'); без времени -> ('', '', 'Встреча')."""
     text = text.strip()
+    if re.match(r'^\d{1,2}[:.]\d{2}', text) and not _parse_clock(re.split(r'\s|[-–]', text, maxsplit=1)[0]):
+        raise ValueError('Invalid event time')
     m = re.match(r"^(\S+?)\s*[-–]\s*(\S+)\s+(.+)$", text)
     if m:
         a, b = _parse_clock(m.group(1)), _parse_clock(m.group(2))
@@ -919,9 +1008,10 @@ def finish_input(state, kind, orig):
 
 def add_input(kind, text):
     """Результат окна ввода (Enter): добавляет задачу / событие / валюту / монету."""
-    text = (text or "").strip()
+    text = (text or "").replace("\r", " ").replace("\n", " ").strip()[:240]
     state = load_json(STATE, DEFAULT_STATE)
     orig = {"toast": state.get("toast"), "chart": state.get("chart")}
+    state.pop('toast', None)
     if not text:
         finish_input(state, kind, orig)
         render()
@@ -929,11 +1019,11 @@ def add_input(kind, text):
         return
     cfg = load_config()
     if kind == "task":
-        gcal.add_task(text)
+        with state_lock(): gcal.add_task(text)
     elif kind == "event":
         sel = dt.date.fromisoformat(state["selected"]) if state.get("selected") else dt.date.today()
         st, en, title = parse_event(text)
-        gcal.add_local_event(sel, st, en, title)
+        with state_lock(): gcal.add_local_event(sel, st, en, title)
     elif kind in ("add0", "add1"):
         li = int(kind[-1])
         base = cfg.get("fx_base", "RUB")
@@ -941,22 +1031,26 @@ def add_input(kind, text):
         if not item:
             toast_msg(state, kind, tr("err_nofx") % text[:12] if err == "nofx" else tr("err_notfound") % text[:14])
         else:
-            lists = cfg["lists"]
-            while len(lists) < 2:
-                lists.append([])
-            old = json.loads(json.dumps(lists))
             key = markets.item_key(item)
-            lists[li] = ([item] + [it for it in lists[li] if markets.item_key(it) != key])[:3]
-            save_config(cfg)
+            full = False
+            with state_lock():
+                cfg = load_config()
+                lists = cfg['lists']
+                full = len(lists[li]) >= 40 and all(markets.item_key(it) != key for it in lists[li])
+                if not full:
+                    lists[li] = [it for it in lists[li] if markets.item_key(it) != key] + [item]
+                    save_config(cfg)
+            if full:
+                toast_msg(state, kind, tr('list_full'))
+                finish_input(state, kind, orig); render(); poke(); return
             cache = refresh_data(force=item["k"] == "coin")
             if key not in (cache.get("items") or {}):
-                cfg["lists"] = old
-                save_config(cfg)
-                refresh_data()
-                toast_msg(state, kind, tr("err_notfound") % text[:14])
+                toast_msg(state, kind, tr('saved_no_data'))
+                state['toast']['success'] = True
             else:
-                state["chart"] = "%d:0" % li
+                state["chart"] = "%d:%d" % (li, len(lists[li]) - 1)
                 toast_msg(state, kind, tr("added") % item_label(item, base))
+                state['toast']['success'] = True
     elif kind == "city":
         try:
             g = geocode(text, cfg.get("lang", "ru"))
@@ -968,6 +1062,10 @@ def add_input(kind, text):
         elif g:
             cfg.update({"lat": g["lat"], "lon": g["lon"], "label": g["label"], "tz": g["tz"]})
             save_config(cfg)
+            with FileLock(os.path.join(DATA, 'refresh.lock'), timeout=30):
+                old_cache = load_json(CACHE, {})
+                old_cache.pop('weather', None)
+                save_json(CACHE, old_cache)
             refresh_data(force=True)
     finish_input(state, kind, orig)
     render()

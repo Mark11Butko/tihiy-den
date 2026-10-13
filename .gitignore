@@ -2,6 +2,8 @@
 data/
 calendars.txt
 tasks.txt
+events.txt
+.venv/
 __pycache__/
 *.pyc
 *.log
