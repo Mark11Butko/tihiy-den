@@ -97,12 +97,14 @@ if (-not $NoAutostart) {
 
 # Desktop shortcut and manual launch use the same recovery path as autostart.
 $ws = New-Object -ComObject WScript.Shell
-$shortcut = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Quiet Day.lnk'))
+$shortcutPath = Join-Path $env:TEMP 'Quiet Day.lnk'
+$shortcut = $ws.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $shortcut.Arguments = ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -SkinName "{1}"' -f (Join-Path $AppDir 'launch.ps1'),$SkinName)
 $shortcut.WorkingDirectory = $AppDir
 $shortcut.IconLocation = "$rm,0"
 $shortcut.Save()
+Move-Item -LiteralPath $shortcutPath -Destination ([Environment]::GetFolderPath('Desktop')) -Force
 if (-not $NoLaunch) { & (Join-Path $AppDir 'launch.ps1') -SkinName $SkinName }
 Say 'Done!'
 Write-Host ("Config: " + (Join-Path $AppDir 'data\config.json'))
