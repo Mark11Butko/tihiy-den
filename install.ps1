@@ -37,6 +37,7 @@ if (-not $py) {
 }
 & $py -c "import sys; assert sys.version_info >= (3,9)"
 if ($LASTEXITCODE -ne 0) { throw 'Python 3.9+ is required' }
+$py = (& $py -c "import sys; print(sys.executable)").Trim()
 
 # 2. Rainmeter
 $rmPaths = @('C:\Program Files\Rainmeter\Rainmeter.exe', 'C:\Program Files (x86)\Rainmeter\Rainmeter.exe')
@@ -58,6 +59,7 @@ if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
 Say "Copying program to $AppDir"
 New-Item -ItemType Directory -Force $AppDir | Out-Null
 Copy-Item (Join-Path $src '*.py') $AppDir -Force
+Copy-Item (Join-Path $src 'launch.ps1') $AppDir -Force
 Push-Location $AppDir
 try {
     & $py -X utf8 configure.py --lang $Lang --city $City --base $FxBase --scale $Scale --skin-name $SkinName
@@ -77,20 +79,31 @@ if (-not $NoAutostart) {
     $act = New-ScheduledTaskAction -Execute $pyw -Argument ('"{0}" refresh' -f (Join-Path $AppDir 'engine.py')) -WorkingDirectory $AppDir
     $trg = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName "$SkinName Refresh" -Action $act -Trigger $trg -Settings $set -Force | Out-Null
-    $act2 = New-ScheduledTaskAction -Execute $rm
+    $launch = Join-Path $AppDir 'launch.ps1'
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $act2 = New-ScheduledTaskAction -Execute $ps -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -SkinName "{1}"' -f $launch,$SkinName) -WorkingDirectory $AppDir
     $trg2 = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $trg2.Delay = 'PT15S'
-    Register-ScheduledTask -TaskName "$SkinName Rainmeter" -Action $act2 -Trigger $trg2 -Settings $set -Force | Out-Null
+    $launchSet = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+    Register-ScheduledTask -TaskName "$SkinName Rainmeter" -Action $act2 -Trigger $trg2 -Settings $launchSet -Force | Out-Null
+    [xml]$xml = Export-ScheduledTask -TaskName "$SkinName Rainmeter"
+    $ns = $xml.DocumentElement.NamespaceURI
+    $u = $xml.CreateElement('SessionStateChangeTrigger',$ns)
+    $enabled = $xml.CreateElement('Enabled',$ns); $enabled.InnerText='true'; [void]$u.AppendChild($enabled)
+    $state = $xml.CreateElement('StateChange',$ns); $state.InnerText='SessionUnlock'; [void]$u.AppendChild($state)
+    [void]$xml.Task.Triggers.AppendChild($u)
+    try { Register-ScheduledTask -TaskName "$SkinName Rainmeter" -Xml $xml.OuterXml -Force | Out-Null } catch { Write-Warning 'Unlock trigger unavailable; the refresh task restores Rainmeter within one minute.' }
 }
 
-# 6. Activate the skin
-if (-not $NoLaunch) {
-    Say 'Launching widget'
-    if (-not (Get-Process Rainmeter -ErrorAction SilentlyContinue)) { Start-Process $rm; Start-Sleep 5 }
-    & $rm '!Refresh' | Out-Null
-    Start-Sleep 1
-    & $rm '!ActivateConfig' $SkinName "$SkinName.ini"
-}
+# Desktop shortcut and manual launch use the same recovery path as autostart.
+$ws = New-Object -ComObject WScript.Shell
+$shortcut = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Quiet Day.lnk'))
+$shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$shortcut.Arguments = ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -SkinName "{1}"' -f (Join-Path $AppDir 'launch.ps1'),$SkinName)
+$shortcut.WorkingDirectory = $AppDir
+$shortcut.IconLocation = "$rm,0"
+$shortcut.Save()
+if (-not $NoLaunch) { & (Join-Path $AppDir 'launch.ps1') -SkinName $SkinName }
 Say 'Done!'
 Write-Host ("Config: " + (Join-Path $AppDir 'data\config.json'))
 Write-Host ("Google Calendar: put your secret iCal URL into " + (Join-Path $AppDir 'calendars.txt') + " (see README).")

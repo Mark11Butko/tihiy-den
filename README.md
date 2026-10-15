@@ -97,3 +97,5 @@ Open-Meteo (CC BY 4.0), MET Norway, Bank of Russia, Frankfurter / ECB, CoinGecko
 
 ### License
 MIT — see [LICENSE](LICENSE).
+
+Автозапуск: виджет восстанавливается при входе и разблокировке Windows. Для ручного открытия используйте ярлык Quiet Day на рабочем столе. / The widget starts at sign-in and unlock; use the Quiet Day desktop shortcut to reopen it.
